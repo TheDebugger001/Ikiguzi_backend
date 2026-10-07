@@ -8,6 +8,7 @@ const { OAuth2Client } = require("google-auth-library");
 const crypto = require("crypto");
 const nodemailer = require("nodemailer");
 const { normalizePhone, phoneVariants, generateOtpCode, sendOtpSms } = require("../utils/sms.util");
+const vendorStaffInvitation = require("../services/vendorStaffInvitation.service");
 
 // ─── HELPER: GOOGLE OAUTH CLIENT ─────────────────────────────────────────────
 const getGoogleClient = () => {
@@ -36,6 +37,21 @@ const buildUserResponse = (u) => ({
   companyName: u.companyName || null,
 });
 
+const buildAuthenticatedUserResponse = async (user) => {
+  const response = buildUserResponse(user);
+  const membership = await vendorStaffInvitation.getActiveMembership(user._id);
+  if (!membership) return response;
+  return {
+    ...response,
+    vendorStaff: true,
+    vendorOwnerId: membership.vendorOwner.toString(),
+    staffRole: membership.role,
+    vendorPermissions: membership.permissions,
+  };
+};
+
+exports.getAuthenticatedUserResponse = buildAuthenticatedUserResponse;
+
 // ─── REGISTER USER ───────────────────────────────────────────────────────────
 // Supports two flows:
 //   1. Legacy sign-up: Fullname, email, password, gender, phone, role.
@@ -52,9 +68,11 @@ exports.registerUser = async (req, res) => {
       role,
       companyName,
       verificationToken,
+      staffInviteToken,
     } = req.body;
+    const accountRole = staffInviteToken ? "buyer" : role;
 
-    if (!Fullname || !password || !gender || !role) {
+    if (!Fullname || !password || !gender || !accountRole) {
       return res.status(400).json({ message: "All fields are required" });
     }
 
@@ -62,7 +80,7 @@ exports.registerUser = async (req, res) => {
       return res.status(400).json({ message: "Phone number is required" });
     }
 
-    if (role === "vendor" && !companyName) {
+    if (accountRole === "vendor" && !companyName) {
       return res.status(400).json({ message: "Company name is required" });
     }
 
@@ -108,6 +126,22 @@ exports.registerUser = async (req, res) => {
     }
 
     const normalizedEmail = email ? email.trim().toLowerCase() : undefined;
+    if (staffInviteToken) {
+      if (!normalizedEmail) {
+        return res.status(400).json({
+          message: "Use the email address that received the invitation.",
+        });
+      }
+      const invitation = await vendorStaffInvitation.findPendingInvitation(
+        staffInviteToken,
+        normalizedEmail,
+      );
+      if (!invitation) {
+        return res.status(400).json({
+          message: "This vendor team invitation is invalid or has expired.",
+        });
+      }
+    }
 
     // Check if the user already exists by email or phone
     const existingUser = await User.findOne({
@@ -134,19 +168,32 @@ exports.registerUser = async (req, res) => {
       password: hashedPassword,
       gender,
       phone: verifiedPhone,
-      role,
-      companyName: role === "vendor" ? companyName.trim() : undefined,
+      role: accountRole,
+      companyName: accountRole === "vendor" ? companyName.trim() : undefined,
     });
 
     // Save the user to the database
     await newUser.save();
+
+    if (staffInviteToken) {
+      const membership = await vendorStaffInvitation.acceptInvitation(
+        staffInviteToken,
+        newUser,
+      );
+      if (!membership) {
+        await newUser.deleteOne();
+        return res.status(400).json({
+          message: "This vendor team invitation has already been used or expired.",
+        });
+      }
+    }
 
     // Generate JWT token so frontend can immediately log in after registration
     const token = signToken(newUser._id);
 
     return res.status(201).json({
       message: "User registered successfully",
-      user: buildUserResponse(newUser),
+      user: await buildAuthenticatedUserResponse(newUser),
       token,
     });
   } catch (error) {
@@ -158,7 +205,7 @@ exports.registerUser = async (req, res) => {
 // ─── LOGIN USER ──────────────────────────────────────────────────────────────
 exports.loginUser = async (req, res) => {
   try {
-    const { email, phone, password } = req.body;
+    const { email, phone, password, staffInviteToken } = req.body;
 
     if ((!email && !phone) || !password) {
       return res
@@ -195,21 +242,25 @@ exports.loginUser = async (req, res) => {
       return res.status(400).json({ message: "Invalid email/phone or password" });
     }
 
+    if (staffInviteToken) {
+      const membership = await vendorStaffInvitation.acceptInvitation(
+        staffInviteToken,
+        user,
+      );
+      if (!membership) {
+        return res.status(400).json({
+          message: "This vendor team invitation is invalid, expired, or already used.",
+        });
+      }
+    }
+
     // Generate a JWT token for the authenticated user
     const token = jwt.sign({ userId: user._id }, process.env.JWT_SECRET, {
       expiresIn: "1d",
     });
 
     // Return response excluding sensitive password hash
-    const userResponse = {
-      _id: user._id,
-      Fullname: user.Fullname,
-      email: user.email,
-      role: user.role,
-      phone: user.phone,
-      gender: user.gender,
-      companyName: user.companyName,
-    };
+    const userResponse = await buildAuthenticatedUserResponse(user);
 
     return res.status(200).json({
       message: "Login successful",
@@ -296,7 +347,7 @@ exports.googleLogin = async (req, res) => {
 
     return res.status(200).json({
       message: "Google sign-in successful",
-      user: buildUserResponse(user),
+      user: await buildAuthenticatedUserResponse(user),
       token,
     });
   } catch (error) {
@@ -848,7 +899,7 @@ exports.verifyOtp = async (req, res) => {
       const token = signToken(user._id);
       return res.status(200).json({
         message: "Phone verified — you are now signed in",
-        user: buildUserResponse(user),
+        user: await buildAuthenticatedUserResponse(user),
         token,
         verified: true,
       });

@@ -37,6 +37,9 @@ paths:
                   type: string
                   enum: [buyer, vendor, courier]
                   default: "buyer"
+                staffInviteToken:
+                  type: string
+                  description: One-time token from a vendor-team invitation email. Completes registration as a team member.
       responses:
         '201':
           description: User registered successfully
@@ -61,6 +64,9 @@ paths:
                 password:
                   type: string
                   example: "Password123!"
+                staffInviteToken:
+                  type: string
+                  description: One-time token from a vendor-team invitation email. Accepts the invitation after sign-in.
       responses:
         '200':
           description: Successfully authenticated (Returns JWT)
@@ -674,21 +680,21 @@ paths:
           description: Store updated successfully
 
   # ==========================================
-  # STORE STAFF MANAGEMENT ROUTES
+  # VENDOR ACCOUNT TEAM ROUTES
   # ==========================================
   /staff:
     get:
-      summary: Get Vendor Store Staff Members
-      tags: [Store Staff]
+      summary: Get Vendor Account Team Members
+      tags: [Vendor Team]
       security:
         - BearerAuth: []
       responses:
         '200':
-          description: List of assigned store staff
+          description: List of staff assigned to the authenticated vendor account. A store is not required.
 
     post:
-      summary: Add New Store Staff Member
-      tags: [Store Staff]
+      summary: Add Vendor Account Team Member
+      tags: [Vendor Team]
       security:
         - BearerAuth: []
       requestBody:
@@ -697,10 +703,13 @@ paths:
           application/json:
             schema:
               type: object
-              required: [email, permissions]
+              required: [email]
               properties:
                 email:
                   type: string
+                role:
+                  type: string
+                  enum: [STORE_MANAGER, ORDER_MANAGER, CATALOG_MANAGER]
                 permissions:
                   type: object
                   properties:
@@ -710,12 +719,14 @@ paths:
                       type: boolean
       responses:
         '201':
-          description: Staff member assigned successfully
+          description: |
+            Staff member assigned to the vendor account. The email must belong
+            to an existing MVEC account. MVEC sends the member a sign-in invitation.
 
   /staff/{id}:
     put:
       summary: Update Staff Member Permissions
-      tags: [Store Staff]
+      tags: [Vendor Team]
       security:
         - BearerAuth: []
       parameters:
@@ -739,7 +750,7 @@ paths:
 
     delete:
       summary: Remove Staff Member
-      tags: [Store Staff]
+      tags: [Vendor Team]
       security:
         - BearerAuth: []
       parameters:

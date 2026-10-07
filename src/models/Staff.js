@@ -5,7 +5,6 @@ const staffSchema = new mongoose.Schema(
     store: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Store",
-      required: true,
     },
     vendorOwner: {
       type: mongoose.Schema.Types.ObjectId,
@@ -15,8 +14,10 @@ const staffSchema = new mongoose.Schema(
     user: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
-      required: true,
     },
+    email: { type: String, default: "", trim: true, lowercase: true },
+    invitationTokenHash: { type: String, select: false },
+    invitationExpiresAt: { type: Date, select: false },
     role: {
       type: String,
       enum: ["STORE_MANAGER", "ORDER_MANAGER", "CATALOG_MANAGER"],

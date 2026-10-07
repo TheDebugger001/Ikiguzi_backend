@@ -7,7 +7,7 @@ exports.checkStaffPermission = (requiredPermission) => {
       // If user is the store owner (primary vendor) or super admin, pass through
       if (req.user.role === "super_admin") return next();
 
-      const store = await Store.findOne({ owner: req.user.id });
+      const store = await Store.findOne({ vendor: req.user.id });
       if (store) {
         req.store = store;
         return next(); // User is the main owner
@@ -27,7 +27,14 @@ exports.checkStaffPermission = (requiredPermission) => {
       }
 
       req.staff = staffMember;
-      req.store = await Store.findById(staffMember.store);
+      req.store = staffMember.store
+        ? await Store.findById(staffMember.store)
+        : await Store.findOne({ vendor: staffMember.vendorOwner });
+      if (!req.store) {
+        return res.status(403).json({
+          message: "The vendor account has no store yet; store operations are not available.",
+        });
+      }
       next();
     } catch (error) {
       return res.status(500).json({ message: error.message });
