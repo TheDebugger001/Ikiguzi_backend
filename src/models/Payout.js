@@ -42,7 +42,7 @@ const payoutSchema = new mongoose.Schema(
     },
     payoutMethod: {
       type: String,
-      enum: ["MOMO", "AIRTEL"],
+      enum: ["MOMO", "AIRTEL", "BANK"],
       default: "MOMO",
     },
     payoutDetails: {
@@ -57,6 +57,7 @@ const payoutSchema = new mongoose.Schema(
     },
     transferReference: String, // Gateway transfer reference ID
     rejectionReason: String,
+    note: { type: String, default: "" },
     processedAt: Date,
   },
   { timestamps: true }
