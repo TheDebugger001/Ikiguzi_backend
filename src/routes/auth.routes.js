@@ -18,17 +18,13 @@ const { protect } = require("../middleware/auth.middleware");
 
 router.use(protect);
 
-router.get("/me", (req, res) => {
-  const userResponse = {
-    _id: req.user._id,
-    Fullname: req.user.Fullname,
-    email: req.user.email,
-    role: req.user.role,
-    phone: req.user.phone,
-    gender: req.user.gender,
-    companyName: req.user.companyName,
-  };
-  return res.status(200).json({ user: userResponse });
+router.get("/me", async (req, res) => {
+  try {
+    const user = await auth.getAuthenticatedUserResponse(req.user);
+    return res.status(200).json({ user });
+  } catch (error) {
+    return res.status(500).json({ message: "Could not load the current account." });
+  }
 });
 
 router.route("/addresses").get(auth.getAddresses).post(auth.addAddress);
