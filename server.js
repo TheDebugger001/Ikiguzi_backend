@@ -51,8 +51,13 @@ app.use(express.json({
 }));
 app.use(morgan("dev"));
 
+// Uploaded product images are returned as public URLs for storefront display.
+app.use("/uploads", express.static(require("path").resolve(__dirname, "uploads")));
+
   
 app.use("/api/auth", require("./src/routes/auth.routes"));
+app.use("/api/admin", require("./src/routes/admin.dashboard.routes"));
+app.use("/api/uploads", require("./src/routes/upload.routes"));
 app.use("/api/search", require("./src/routes/search.routes"));
 app.use("/api/products", require("./src/routes/product.routes"));
 app.use("/api/categories", require("./src/routes/category.routes"));
@@ -63,6 +68,7 @@ app.use("/api/orders", require("./src/routes/order.routes"));
 app.use("/api/stores", require("./src/routes/store.routes"));
 app.use("/api/payouts", require("./src/routes/payout.routes"));
 app.use("/api/staff", require("./src/routes/staff.routes"));
+app.use("/api/vendor/staff", require("./src/routes/staff.routes"));
 app.use("/api/payments", require("./src/routes/payment.routes"));
 app.use("/api/admin", require("./src/routes/admin.financial.routes"));
 app.use("/api/admin", require("./src/routes/admin.commission.routes"));
@@ -94,7 +100,7 @@ app.get("/api/events", (req, res) => {
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache, no-transform");
   res.setHeader("Connection", "keep-alive");
-  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Origin", "*")
   res.flushHeaders?.();
 
   // Send initial connection event
@@ -153,8 +159,32 @@ app.use((err, req, res, next) => {
 // Initialize background cron tasks once DB connection is established
 mongoose.connection.once("open", () => {
   console.log("Connected to MongoDB.");
+  rebuildSparseUserIndexes();
   initBackgroundWorkers();
 });
+
+// The users.email / users.phone unique indexes were created non-sparse, so
+// every account missing one of them indexed as `null` and collided with the
+// next one (phone-only sign-ups, Google accounts). Mongoose only creates
+// indexes, so an existing deployment must drop the old option before the
+// sparse schema indexes can be rebuilt.
+async function rebuildSparseUserIndexes() {
+  try {
+    const collection = mongoose.connection.collection("users");
+    const existing = await collection.indexes();
+    const stale = ["email_1", "phone_1"].filter((name) => {
+      const index = existing.find((i) => i.name === name);
+      return index && index.unique && !index.sparse;
+    });
+    for (const name of stale) {
+      await collection.dropIndex(name);
+      console.log(`Rebuilding users.${name} as a sparse unique index.`);
+    }
+    if (stale.length) await User.syncIndexes();
+  } catch (err) {
+    console.error("Could not rebuild user indexes:", err.message);
+  }
+}
 
 const PORT = process.env.PORT || 4000;
 const HOST = process.env.HOST || "0.0.0.0";

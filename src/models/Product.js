@@ -34,7 +34,7 @@ const productSchema = new mongoose.Schema(
 
     status: {
       type: String,
-      enum: ["DRAFT", "PENDING_APPROVAL", "ACTIVE", "OUT_OF_STOCK"],
+      enum: ["DRAFT", "PENDING_APPROVAL", "ACTIVE", "INACTIVE", "OUT_OF_STOCK"],
       default: "DRAFT",
     },
 

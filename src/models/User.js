@@ -32,6 +32,9 @@ const userSchema = new mongoose.Schema(
       type: String,
       required: [false, "Email is required"],
       unique: true,
+      // Phone-only accounts carry no email; without `sparse` the second
+      // such user would collide with the first on a null key (E11000).
+      sparse: true,
       lowercase: true,
       trim: true,
     },
@@ -39,21 +42,24 @@ const userSchema = new mongoose.Schema(
       type: String,
       required: function () {
         // Required only if user did NOT register via Google OAuth
-        return !this.googleId;
+        return !this.googleId && !this.isVendorStaff;
       },
     },
     gender: {
       type: String,
       enum: ["male", "female", "other"],
       required: function () {
-        return !this.googleId;
+        return !this.googleId && !this.isVendorStaff;
       },
     },
     phone: {
       type: String,
+      // Google OAuth accounts carry no phone; `sparse` keeps them from
+      // colliding on the unique index.
       unique: true,
+      sparse: true,
       required: function () {
-        return !this.googleId;
+        return !this.googleId && !this.isVendorStaff;
       },
       validate: {
         validator: function (v) {
@@ -79,6 +85,9 @@ const userSchema = new mongoose.Schema(
       enum: ["buyer", "vendor", "supplier", "affiliate", "super_admin", "developer"],
       default: "buyer",
     },
+    // Super admins can also operate their own vendor account without
+    // surrendering administrative privileges.
+    isSellerEnabled: { type: Boolean, default: false },
     status: {
       type: String,
       enum: ["ACTIVE", "SUSPEND", "BLOCK", "INVESTIGATE"],
@@ -87,7 +96,7 @@ const userSchema = new mongoose.Schema(
     companyName: {
       type: String,
       required: function () {
-        return this.role === "vendor";
+        return this.role === "vendor" && !this.isVendorStaff;
       },
     },
 
@@ -95,6 +104,8 @@ const userSchema = new mongoose.Schema(
 
     resetPasswordToken: { type: String },
     resetPasswordExpires: { type: Date },
+    isVendorStaff: { type: Boolean, default: false, select: false },
+    lastPasswordChangeAt: { type: Date },
   },
   { timestamps: true },
 );

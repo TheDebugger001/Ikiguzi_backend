@@ -32,15 +32,13 @@ router.get("/vendor/me", authorize("vendor"), getVendorProducts);
 router.get("/:id", getProductById);
 
 
-// Allow vendors, super admins, or staff with 'canManageProducts'
+// Vendors and super_admins can always manage their own products.
+// Staff with the 'canManageProducts' permission can manage on behalf of the store owner.
+// checkStaffPermission already passes through if the user IS the store owner or super_admin,
+// so it covers all three cases in a single middleware chain.
 router.post("/", checkStaffPermission("canManageProducts"), createProduct);
 router.put("/:id", checkStaffPermission("canManageProducts"), updateProduct);
 router.delete("/:id", checkStaffPermission("canManageProducts"), deleteProduct);
-
-// Create, Update, Delete routes
-router.post("/", authorize("vendor", "super_admin"), createProduct);
-router.put("/:id", authorize("vendor", "super_admin"), updateProduct);
-router.delete("/:id", authorize("vendor", "super_admin"), deleteProduct);
 
 
 module.exports = router;

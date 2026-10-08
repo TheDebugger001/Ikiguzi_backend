@@ -18,6 +18,21 @@ const affiliateLinkSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "Product",
     },
+    campaign: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "AffiliateCampaign",
+      default: null,
+      index: true,
+    },
+    // Affiliate-facing label ("TikTok bio", "General promotion", ...).
+    label: {
+      type: String,
+      default: "",
+    },
+    lastClickedAt: {
+      type: Date,
+      default: null,
+    },
     clickCount: {
       type: Number,
       default: 0,

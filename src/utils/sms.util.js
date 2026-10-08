@@ -28,6 +28,45 @@ exports.phoneVariants = (phone) => {
 };
 
 /**
+ * Explains exactly what is wrong with a supplied phone number so callers can
+ * return an actionable error instead of a generic "invalid credentials" reply.
+ * A user who typed only 8 digits is told how many digits are missing, not that
+ * his number is simply wrong.
+ *
+ * @param {string} phone
+ * @returns {string|null} null when the number is valid, otherwise the message.
+ */
+exports.describePhoneIssue = (phone) => {
+  const raw = phone === null || phone === undefined ? "" : String(phone).trim();
+  if (!raw) return "Phone number is required.";
+
+  const digits = raw.replace(/\D/g, "");
+  if (!digits) {
+    return "That does not look like a phone number. Enter digits only, e.g. 0788123456 or +250788123456.";
+  }
+
+  const hasCountryCode = digits.startsWith("250");
+  const expected = hasCountryCode ? 12 : 10;
+
+  if (digits.length < expected) {
+    return (
+      `Your phone number is incomplete: ${digits.length} of ${expected} digits ` +
+      `were entered. Enter the full number, e.g. 0788123456 or +250788123456.`
+    );
+  }
+  if (digits.length > expected) {
+    return (
+      `Your phone number is too long: ${digits.length} digits were entered but a ` +
+      `Rwandan number has ${expected}. Example: 0788123456.`
+    );
+  }
+  if (exports.normalizePhone(raw) === null) {
+    return "That is not a valid Rwandan number. It must start with 07 (e.g. 0788123456) or +2507 (e.g. +250788123456).";
+  }
+  return null;
+};
+
+/**
  * Generates a cryptographically-secure numeric OTP code.
  * @param {number} length - number of digits (default 6)
  */

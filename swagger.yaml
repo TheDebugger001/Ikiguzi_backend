@@ -1074,6 +1074,28 @@ paths:
   # ==========================================
   # B2B WHOLESALE ROUTES
   # ==========================================
+  /wholesale/orders/mine:
+    get:
+      summary: List the current vendor's or supplier's wholesale orders
+      tags: [Wholesale B2B]
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: query
+          name: page
+          schema:
+            type: integer
+            default: 1
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 50
+            maximum: 100
+      responses:
+        '200':
+          description: Role-scoped wholesale orders and pagination metadata
+
   /wholesale/orders:
     post:
       summary: Create B2B Wholesale Order (MOQ Enforced)
@@ -1094,23 +1116,17 @@ paths:
                   type: array
                   items:
                     type: object
-                    required: [product, productName, unitPrice, quantity, moq]
+                    required: [productId, quantity]
                     properties:
-                      product:
+                      productId:
                         type: string
-                      productName:
-                        type: string
-                      unitPrice:
-                        type: number
                       quantity:
-                        type: integer
-                      moq:
                         type: integer
       responses:
         '201':
           description: Wholesale order created
         '400':
-          description: MOQ validation failure
+          description: Product, MOQ, stock, or supplier validation failure
 
   /wholesale/orders/{orderId}/hold-escrow:
     post:
@@ -1127,6 +1143,24 @@ paths:
       responses:
         '200':
           description: Escrow locked successfully
+
+  /wholesale/orders/{orderId}/ship:
+    post:
+      summary: Mark an escrow-funded wholesale order as shipped
+      tags: [Wholesale B2B]
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: orderId
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Shipment status updated
+        '403':
+          description: Supplier role required
 
   /wholesale/orders/{orderId}/confirm-receipt:
     post:

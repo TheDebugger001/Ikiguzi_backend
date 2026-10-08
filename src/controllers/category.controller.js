@@ -34,7 +34,12 @@ exports.createCategory = async (req, res) => {
 
     const existing = await Category.findOne({ slug });
     if (existing) {
-      return res.status(409).json({ message: "A category with this name/slug already exists" });
+      // Return the existing category so the form can auto-select it rather than error
+      return res.status(200).json({
+        alreadyExisted: true,
+        message: `Category "${existing.name}" already exists and has been selected.`,
+        category: { id: existing._id, name: existing.name, slug: existing.slug },
+      });
     }
 
     const category = await Category.create({

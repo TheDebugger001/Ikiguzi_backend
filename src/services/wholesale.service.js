@@ -2,6 +2,7 @@ const mongoose = require("mongoose");
 const WholesaleOrder = require("../models/WholesaleOrder");
 const VendorWallet = require("../models/VendorWallet");
 const Supplier = require("../models/Supplier");
+const WholesaleProduct = require("../models/WholesaleProduct");
 
 class WholesaleService {
   /**
@@ -12,9 +13,13 @@ class WholesaleService {
       throw new Error("Invalid supplier ID provided.");
     }
 
-    const supplier = await Supplier.findById(supplierId);
+    const supplier = await Supplier.findOne({
+      _id: supplierId,
+      status: "ACTIVE",
+      verificationStatus: "VERIFIED",
+    });
     if (!supplier) {
-      throw new Error("Supplier profile not found.");
+      throw new Error("Supplier is not active and verified.");
     }
     const supplierUserId = supplier.user;
 
@@ -25,24 +30,43 @@ class WholesaleService {
     let totalAmount = 0;
     const validatedItems = [];
 
+    if (!Array.isArray(items) || items.length === 0) {
+      throw new Error("At least one wholesale product is required.");
+    }
+
     for (const item of items) {
       if (!item.productId || !mongoose.isValidObjectId(item.productId)) {
         throw new Error(
           `Invalid product ID for item '${item.productName}'. Only real catalog products can be ordered.`
         );
       }
-      if (item.quantity < item.moq) {
+      const quantity = Number(item.quantity);
+      const product = await WholesaleProduct.findOne({
+        _id: item.productId,
+        supplier: supplier._id,
+        status: "ACTIVE",
+      });
+      if (!product) {
+        throw new Error("A requested item is not an active product from this supplier.");
+      }
+      if (!Number.isInteger(quantity) || quantity < product.moq) {
         throw new Error(
-          `MOQ Breach: Item '${item.productName}' requires a minimum quantity of ${item.moq}, but got ${item.quantity}.`
+          `MOQ Breach: Item '${product.name}' requires a minimum quantity of ${product.moq}, but got ${quantity}.`
         );
       }
-      totalAmount += item.unitPrice * item.quantity;
+      if (quantity > product.stockQuantity) {
+        throw new Error(
+          `Insufficient stock for '${product.name}'. Available: ${product.stockQuantity}.`
+        );
+      }
+      const unitPrice = product.wholesalePrice * (1 - product.bulkDiscount / 100);
+      totalAmount += unitPrice * quantity;
       validatedItems.push({
-        product: item.productId,
-        productName: item.productName,
-        unitPrice: item.unitPrice,
-        quantity: item.quantity,
-        moq: item.moq,
+        product: product._id,
+        productName: product.name,
+        unitPrice,
+        quantity,
+        moq: product.moq,
       });
     }
 
@@ -59,6 +83,21 @@ class WholesaleService {
       deliveryOtp,
     });
 
+    return order;
+  }
+
+  async markWholesaleOrderShipped(orderId, supplierUserId) {
+    const order = await WholesaleOrder.findOne({
+      _id: orderId,
+      supplier: supplierUserId,
+    });
+    if (!order) throw new Error("Wholesale order not found.");
+    if (order.status !== "ESCROW_HELD") {
+      throw new Error("Only orders with escrow held can be marked as shipped.");
+    }
+    order.status = "SHIPPED";
+    order.shippedAt = new Date();
+    await order.save();
     return order;
   }
 

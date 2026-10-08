@@ -7,7 +7,13 @@ const jwt = require("jsonwebtoken");
 const { OAuth2Client } = require("google-auth-library");
 const crypto = require("crypto");
 const nodemailer = require("nodemailer");
-const { normalizePhone, phoneVariants, generateOtpCode, sendOtpSms } = require("../utils/sms.util");
+const {
+  normalizePhone,
+  phoneVariants,
+  generateOtpCode,
+  sendOtpSms,
+  describePhoneIssue,
+} = require("../utils/sms.util");
 const vendorStaffInvitation = require("../services/vendorStaffInvitation.service");
 
 // ─── HELPER: GOOGLE OAUTH CLIENT ─────────────────────────────────────────────
@@ -22,23 +28,72 @@ const getGoogleClient = () => {
 };
 
 // ─── HELPER: SIGN JWT & BUILD SANITIZED USER RESPONSE ───────────────────────
-const signToken = (userId) =>
-  jwt.sign({ userId: userId.toString() }, process.env.JWT_SECRET, {
+const Staff = require("../models/Staff");
+
+const getStaffDetailsForUser = async (userId) => {
+  try {
+    const staffMember = await Staff.findOne({
+      $or: [{ user: userId }, { user_id: userId }],
+      status: "ACTIVE",
+    }).populate("store");
+    if (!staffMember) return null;
+    const permissions = staffMember.permissions?.toObject?.() || staffMember.permissions || {};
+    const permissionsList = Object.entries(permissions).filter(([, v]) => v).map(([k]) => k);
+    const storeId = staffMember.store?._id || staffMember.store;
+    return {
+      staffMember,
+      storeId: storeId ? storeId.toString() : null,
+      staffRole: staffMember.role,
+      permissions: permissionsList,
+      permissionsMap: permissions,
+    };
+  } catch (err) {
+    return null;
+  }
+};
+
+const signToken = (userId, staffDetails = null) => {
+  const payload = {
+    userId: userId.toString(),
+    id: userId.toString(),
+  };
+  if (staffDetails) {
+    payload.isStaff = true;
+    payload.isVendorStaff = true;
+    payload.storeId = staffDetails.storeId;
+    payload.vendor_id = staffDetails.storeId;
+    payload.staffRole = staffDetails.staffRole;
+    payload.permissions = staffDetails.permissions;
+    payload.permissionsMap = staffDetails.permissionsMap;
+  }
+  return jwt.sign(payload, process.env.JWT_SECRET, {
     expiresIn: "1d",
   });
+};
 
-const buildUserResponse = (u) => ({
+const buildUserResponse = (u, staffDetails = null) => ({
   _id: u._id,
   Fullname: u.Fullname,
   email: u.email || null,
   role: u.role,
+  isSellerEnabled: Boolean(u.isSellerEnabled),
   phone: u.phone || null,
   gender: u.gender || null,
   companyName: u.companyName || null,
+  lastPasswordChangeAt: u.lastPasswordChangeAt,
+  isStaff: Boolean(staffDetails),
+  isVendorStaff: Boolean(staffDetails),
+  storeId: staffDetails ? staffDetails.storeId : null,
+  store_id: staffDetails ? staffDetails.storeId : null,
+  staffRole: staffDetails ? staffDetails.staffRole : null,
+  staff_role: staffDetails ? staffDetails.staffRole : null,
+  permissions: staffDetails ? staffDetails.permissions : [],
+  permissionsMap: staffDetails ? staffDetails.permissionsMap : {},
 });
 
-const buildAuthenticatedUserResponse = async (user) => {
-  const response = buildUserResponse(user);
+const buildAuthenticatedUserResponse = async (user, staffDetails = null) => {
+  const details = staffDetails || await getStaffDetailsForUser(user._id);
+  const response = buildUserResponse(user, details);
   const membership = await vendorStaffInvitation.getActiveMembership(user._id);
   if (!membership) return response;
   return {
@@ -121,6 +176,7 @@ exports.registerUser = async (req, res) => {
     if (!verifiedPhone) {
       return res.status(400).json({
         message:
+          describePhoneIssue(phone) ||
           "A valid Rwandan phone number is required (e.g. 0788123456 or +250781234567)",
       });
     }
@@ -143,18 +199,26 @@ exports.registerUser = async (req, res) => {
       }
     }
 
-    // Check if the user already exists by email or phone
-    const existingUser = await User.findOne({
-      $or: [{ email: normalizedEmail }, { phone: { $in: phoneVariants(verifiedPhone) } }],
-    });
+    // Duplicate checks are done per field on purpose: folding "no email given"
+    // into the $or used to cast to an empty clause ({}), which matches ANY
+    // user, so a phone-only sign-up was always told an account already exists.
+    if (normalizedEmail) {
+      const emailTaken = await User.findOne({ email: normalizedEmail });
+      if (emailTaken) {
+        return res.status(400).json({
+          message:
+            "An account with this email already exists. Log in with it instead, or use a different email.",
+        });
+      }
+    }
 
-    if (existingUser) {
-      const isEmailMatch =
-        normalizedEmail && existingUser.email === normalizedEmail;
+    const phoneTaken = await User.findOne({
+      phone: { $in: phoneVariants(verifiedPhone) },
+    });
+    if (phoneTaken) {
       return res.status(400).json({
-        message: isEmailMatch
-          ? "User with this email already exists"
-          : "User with this phone number already exists",
+        message:
+          "An account with this phone number already exists. Log in with it instead, or use a different number.",
       });
     }
 
@@ -189,14 +253,35 @@ exports.registerUser = async (req, res) => {
     }
 
     // Generate JWT token so frontend can immediately log in after registration
-    const token = signToken(newUser._id);
+    const staffDetails = await getStaffDetailsForUser(newUser._id);
+    const token = signToken(newUser._id, staffDetails);
 
     return res.status(201).json({
       message: "User registered successfully",
-      user: await buildAuthenticatedUserResponse(newUser),
+      user: await buildAuthenticatedUserResponse(newUser, staffDetails),
       token,
     });
   } catch (error) {
+    // Duplicate key: the unique email/phone indexes. Surface which field
+    // collided instead of leaking a generic 500.
+    if (error && (error.code === 11000 || error.code === 11001)) {
+      const key = Object.keys(error.keyPattern || error.keyValue || {})[0];
+      if (key === "email") {
+        return res.status(400).json({
+          message:
+            "An account with this email already exists. Log in with it instead, or use a different email.",
+        });
+      }
+      if (key === "phone") {
+        return res.status(400).json({
+          message:
+            "An account with this phone number already exists. Log in with it instead, or use a different number.",
+        });
+      }
+      return res.status(400).json({
+        message: "An account with those details already exists.",
+      });
+    }
     console.error("Error registering user:", error);
     return res.status(500).json({ message: "Internal server error" });
   }
@@ -214,7 +299,19 @@ exports.loginUser = async (req, res) => {
     }
 
     const normalizedEmail = email ? email.trim().toLowerCase() : null;
-    const phoneVariantsList = phone ? phoneVariants(phone) : [];
+
+    // A malformed / incomplete phone number used to fall through to the lookup,
+    // find nothing, and come back as "Invalid email/phone or password" — which
+    // reads as a wrong password. Report what is actually wrong with the number.
+    let phoneVariantsList = [];
+    if (phone) {
+      phoneVariantsList = phoneVariants(phone);
+      if (!phoneVariantsList.length) {
+        return res.status(400).json({
+          message: describePhoneIssue(phone),
+        });
+      }
+    }
 
     const user = await User.findOne(
       normalizedEmail && phoneVariantsList.length
@@ -226,6 +323,9 @@ exports.loginUser = async (req, res) => {
 
     if (!user) {
       return res.status(400).json({ message: "Invalid email/phone or password" });
+    }
+    if (user.status !== "ACTIVE") {
+      return res.status(403).json({ message: "This account is suspended. Contact the store owner or support." });
     }
 
     // Check if user is a Google-only account without password
@@ -253,14 +353,13 @@ exports.loginUser = async (req, res) => {
         });
       }
     }
+    const staffDetails = await getStaffDetailsForUser(user._id);
 
     // Generate a JWT token for the authenticated user
-    const token = jwt.sign({ userId: user._id }, process.env.JWT_SECRET, {
-      expiresIn: "1d",
-    });
+    const token = signToken(user._id, staffDetails);
 
     // Return response excluding sensitive password hash
-    const userResponse = await buildAuthenticatedUserResponse(user);
+    const userResponse = await buildAuthenticatedUserResponse(user, staffDetails);
 
     return res.status(200).json({
       message: "Login successful",
@@ -270,6 +369,31 @@ exports.loginUser = async (req, res) => {
   } catch (error) {
     console.error("Error logging in user:", error);
     return res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+exports.changePassword = async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+    if (typeof currentPassword !== "string" || typeof newPassword !== "string" || newPassword.length < 8) {
+      return res.status(400).json({ message: "Enter your current password and a new password of at least 8 characters." });
+    }
+
+    const user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ message: "Account not found." });
+    if (!user.password || !(await bcrypt.compare(currentPassword, user.password))) {
+      return res.status(400).json({ message: "Current password is incorrect." });
+    }
+
+    user.password = await bcrypt.hash(newPassword, 10);
+    user.lastPasswordChangeAt = new Date();
+    await user.save();
+    return res.status(200).json({
+      message: "Password updated successfully.",
+      lastPasswordChangeAt: user.lastPasswordChangeAt,
+    });
+  } catch (error) {
+    return res.status(500).json({ message: "Unable to update password.", error: error.message });
   }
 };
 
@@ -343,11 +467,12 @@ exports.googleLogin = async (req, res) => {
       await user.save();
     }
 
-    const token = signToken(user._id);
+    const staffDetails = await getStaffDetailsForUser(user._id);
+    const token = signToken(user._id, staffDetails);
 
     return res.status(200).json({
       message: "Google sign-in successful",
-      user: await buildAuthenticatedUserResponse(user),
+      user: await buildAuthenticatedUserResponse(user, staffDetails),
       token,
     });
   } catch (error) {
@@ -748,8 +873,7 @@ exports.sendOtp = async (req, res) => {
     const normalizedPhone = normalizePhone(phone);
     if (!normalizedPhone) {
       return res.status(400).json({
-        message:
-          "A valid Rwandan phone number is required (e.g. 0788123456 or +250781234567)",
+        message: `A valid Rwandan phone number is required (e.g. 0788123456 or +250781234567). ${describePhoneIssue(phone) || ""}`.trim(),
       });
     }
 
@@ -831,8 +955,7 @@ exports.verifyOtp = async (req, res) => {
     const normalizedPhone = normalizePhone(phone);
     if (!normalizedPhone) {
       return res.status(400).json({
-        message:
-          "A valid Rwandan phone number is required (e.g. 0788123456 or +250781234567)",
+        message: `A valid Rwandan phone number is required (e.g. 0788123456 or +250781234567). ${describePhoneIssue(phone) || ""}`.trim(),
       });
     }
 
@@ -896,10 +1019,11 @@ exports.verifyOtp = async (req, res) => {
         });
       }
 
-      const token = signToken(user._id);
+      const staffDetails = await getStaffDetailsForUser(user._id);
+      const token = signToken(user._id, staffDetails);
       return res.status(200).json({
         message: "Phone verified — you are now signed in",
-        user: await buildAuthenticatedUserResponse(user),
+        user: await buildAuthenticatedUserResponse(user, staffDetails),
         token,
         verified: true,
       });

@@ -36,7 +36,7 @@ const vendorSchema = new mongoose.Schema(
       default: "ACTIVE",
     },
 
-    location: { type: mongoose.Schema.Types.ObjectId, ref: "Location", default: null },
+    location: { type: mongoose.Schema.Types.Mixed, default: null },
   },
   { timestamps: true }
 );

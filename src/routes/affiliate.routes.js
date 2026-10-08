@@ -6,6 +6,34 @@ const { protect, authorize } = require("../middleware/auth.middleware");
 // Affiliate dashboard (wallet, links, aggregates, own payouts)
 router.get("/me/dashboard", protect, affiliateController.getMyDashboard);
 
+// ─── Profile, verification & settings ────────────────────────────────────────
+router.get("/profile", protect, affiliateController.getProfile);
+router.patch("/profile", protect, affiliateController.updateProfile);
+router.get("/verification", protect, affiliateController.getVerification);
+router.get("/settings", protect, affiliateController.getSettings);
+router.patch("/settings", protect, affiliateController.updateSettings);
+
+// ─── Dashboard aggregates ────────────────────────────────────────────────────
+router.get("/overview", protect, affiliateController.getOverview);
+router.get("/stats", protect, affiliateController.getStats);
+router.get("/wallet", protect, affiliateController.getWallet);
+router.get("/commissions", protect, affiliateController.listCommissions);
+
+// ─── Referral links ──────────────────────────────────────────────────────────
+router.get("/links", protect, affiliateController.listLinks);
+router.post("/links", protect, affiliateController.generateLink);
+router.patch("/links/:linkId", protect, affiliateController.updateLink);
+router.delete("/links/:linkId", protect, affiliateController.deleteLink);
+
+// ─── Campaigns ───────────────────────────────────────────────────────────────
+router.get("/campaigns", protect, affiliateController.listCampaigns);
+router.post("/campaigns/:campaignId/join", protect, affiliateController.joinCampaign);
+
+// ─── Notifications ───────────────────────────────────────────────────────────
+router.get("/notifications", protect, affiliateController.listNotifications);
+router.post("/notifications/read-all", protect, affiliateController.markNotificationsRead);
+router.patch("/notifications/:id/read", protect, affiliateController.markNotificationsRead);
+
 // Own payout history
 router.get("/payouts", protect, affiliateController.listMyPayouts);
 
@@ -17,9 +45,6 @@ router.get("/", protect, authorize("super_admin"), affiliateController.adminList
 
 // Super Admin: review all affiliate payout requests
 router.get("/admin/payouts", protect, authorize("super_admin"), affiliateController.adminListPayouts);
-
-// Generate referral link
-router.post("/links", protect, affiliateController.generateLink);
 
 // Public click tracking endpoint
 router.get("/track/:code", affiliateController.trackClick);

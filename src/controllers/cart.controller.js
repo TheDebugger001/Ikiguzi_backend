@@ -30,11 +30,16 @@ exports.addToCart = async (req, res) => {
   try {
     const { productId, quantity = 1 } = req.body;
 
-    if (!mongoose.isValidObjectId(productId)) {
-      return res.status(404).json({ message: "Product not found" });
+    const requestedQuantity = Number(quantity);
+    if (!Number.isInteger(requestedQuantity) || requestedQuantity < 1) {
+      return res.status(400).json({ message: "Quantity must be a positive whole number" });
     }
 
-    const product = await Product.findById(productId);
+    // Accept old guest carts that stored the public MVEC product code, while
+    // keeping Mongo ObjectIds as the canonical cart reference.
+    const product = mongoose.isValidObjectId(productId)
+      ? await Product.findById(productId)
+      : await Product.findOne({ publicId: productId });
     if (!product) {
       return res.status(404).json({ message: "Product not found" });
     }
@@ -59,12 +64,12 @@ exports.addToCart = async (req, res) => {
     }
 
     const existingItemIndex = cart.items.findIndex(
-      (item) => item.product && item.product.toString() === productId
+      (item) => item.product && item.product.toString() === product._id.toString()
     );
 
-    const targetQuantity = existingItemIndex > -1 
-      ? cart.items[existingItemIndex].quantity + Number(quantity)
-      : Number(quantity);
+    const targetQuantity = existingItemIndex > -1
+      ? cart.items[existingItemIndex].quantity + requestedQuantity
+      : requestedQuantity;
 
     // Check 3: Check requested quantity against stock quantity
     if (targetQuantity > product.stockQuantity) {
@@ -80,7 +85,7 @@ exports.addToCart = async (req, res) => {
       cart.items[existingItemIndex].price = activePrice;
     } else {
       cart.items.push({
-        product: productId,
+        product: product._id,
         quantity: targetQuantity,
         price: activePrice,
       });

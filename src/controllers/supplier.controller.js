@@ -201,8 +201,10 @@ exports.getSupplierProducts = async (req, res) => {
       return res.status(404).json({ message: "Supplier not found" });
     }
 
-    const products = await Product.find({ supplier: supplier._id, status: "ACTIVE" })
-      .select("name sku price discountPrice stockQuantity media supplier");
+    const products = await WholesaleProduct.find({
+      supplier: supplier._id,
+      status: "ACTIVE",
+    }).sort({ createdAt: -1 });
 
     return res.status(200).json({ supplier, products });
   } catch (error) {

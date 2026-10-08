@@ -40,7 +40,8 @@ exports.protect = async (req, res, next) => {
 // Restrict endpoint access to specific roles
 exports.authorize = (...roles) => {
   return (req, res, next) => {
-    if (!roles.includes(req.user.role)) {
+    const isAdminSeller = req.user.role === "super_admin" && req.user.isSellerEnabled;
+    if (!roles.includes(req.user.role) && !(isAdminSeller && roles.includes("vendor"))) {
       return res.status(403).json({
         message: `User role '${req.user.role}' is not authorized to access this route`,
       });

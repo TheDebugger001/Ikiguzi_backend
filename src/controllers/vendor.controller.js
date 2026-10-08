@@ -1,6 +1,98 @@
 const Vendor = require("../models/Vendor");
 const Product = require("../models/Product");
 const Category = require("../models/Category");
+const Store = require("../models/Store");
+const User = require("../models/User");
+
+// Enable seller mode for the authenticated super admin while preserving the
+// super_admin role, then create the vendor profile and store used by seller APIs.
+exports.becomeSeller = async (req, res) => {
+  try {
+    if (req.user.role !== "super_admin") {
+      return res.status(403).json({ message: "Only super admins can activate seller mode" });
+    }
+
+    const businessName = String(req.body.businessName || req.body.storeName || "").trim();
+    const phone = String(req.body.phone || req.body.businessPhone || "").trim();
+    const email = String(req.body.email || req.body.businessEmail || "").trim().toLowerCase();
+    const description = String(req.body.description || req.body.shortDescription || "").trim();
+    if (!businessName || !phone || !email) {
+      return res.status(400).json({ message: "Business/store name, business phone, and business email are required" });
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({ message: "A valid business email is required" });
+    }
+
+    const existingVendor = await Vendor.findOne({ user: req.user._id });
+    if (existingVendor) {
+      if (!req.user.isSellerEnabled) {
+        await User.updateOne(
+          { _id: req.user._id },
+          { $set: { isSellerEnabled: true } },
+        );
+      }
+      return res.status(200).json({ message: "Seller mode is already enabled", isSellerEnabled: true, vendor: existingVendor });
+    }
+
+    const slugBase = businessName.toLowerCase().trim()
+      .replace(/\s+/g, "-").replace(/[^\w-]+/g, "").replace(/--+/g, "-")
+      .replace(/^-|-$/g, "") || "store";
+    let storeSlug = slugBase;
+    if (await Store.exists({ slug: storeSlug })) storeSlug = `${slugBase}-${Date.now().toString(36)}`;
+
+    const vendor = await Vendor.create({
+      user: req.user._id,
+      businessName,
+      description,
+      phone,
+      email,
+      verificationStatus: "VERIFIED",
+      status: "ACTIVE",
+    });
+    let store;
+    try {
+      store = await Store.create({
+        vendor: req.user._id,
+        storeName: businessName,
+        slug: storeSlug,
+        description,
+        contactEmail: email,
+        contactPhone: phone,
+        businessPhone: phone,
+        location: "Kigali",
+        address: { city: "Kigali", country: "Rwanda" },
+        businessAddress: "Kigali, Rwanda",
+        status: "ACTIVE",
+      });
+
+      // `protect` intentionally excludes password from its user query. Use an
+      // atomic update instead of saving that partial document, which would
+      // otherwise fail User's required-password validation.
+      await User.updateOne(
+        { _id: req.user._id },
+        { $set: { isSellerEnabled: true, companyName: businessName } },
+      );
+    } catch (error) {
+      await Promise.all([
+        Store.deleteOne({ _id: store?._id }),
+        Vendor.deleteOne({ _id: vendor._id }),
+      ]);
+      throw error;
+    }
+
+    return res.status(201).json({
+      message: "Seller mode activated",
+      isSellerEnabled: true,
+      vendor,
+      store,
+    });
+  } catch (error) {
+    if (error.code === 11000) {
+      return res.status(409).json({ message: "A store or vendor profile with this information already exists" });
+    }
+    return res.status(400).json({ message: error.message });
+  }
+};
 
 // ─── 1. ONBOARD VENDOR ──────────────────────────────────────────────────────
 // @route   POST /api/vendors/onboard
@@ -16,10 +108,15 @@ exports.onboardVendor = async (req, res) => {
       return res.status(409).json({ message: "Vendor profile already exists" });
     }
 
-    const { businessName, description, phone, email, logoUrl, bannerUrl, location } = req.body;
+    const { businessName, description, phone, email, logoUrl, bannerUrl, location, address } = req.body;
 
     if (!businessName || !phone || !email) {
       return res.status(400).json({ message: "businessName, phone, and email are required" });
+    }
+
+    let locationVal = location !== undefined ? location : null;
+    if (!locationVal && address) {
+      locationVal = typeof address === "object" ? (address.city || address.street) : address;
     }
 
     const vendor = await Vendor.create({
@@ -30,8 +127,54 @@ exports.onboardVendor = async (req, res) => {
       email,
       logoUrl,
       bannerUrl,
-      location: location || null,
+      location: locationVal,
     });
+
+    // Auto-sync Store record so all store/staff/settings endpoints function seamlessly
+    try {
+      const Store = require("../models/Store");
+      let store = await Store.findOne({ vendor: req.user.id });
+      if (!store) {
+        const createSlug = (text) =>
+          text
+            .toString()
+            .toLowerCase()
+            .trim()
+            .replace(/\s+/g, "-")
+            .replace(/[^\w\-]+/g, "")
+            .replace(/\-\-+/g, "-");
+        let slugCandidate = createSlug(businessName);
+        const slugExists = await Store.findOne({ slug: slugCandidate });
+        if (slugExists) {
+          slugCandidate = `${slugCandidate}-${Date.now().toString(36)}`;
+        }
+
+        const cityStr = typeof locationVal === "string" ? locationVal : (typeof address === "object" && address?.city ? address.city : "Kigali");
+        const streetStr = typeof address === "object" && address?.street ? address.street : (typeof locationVal === "string" ? locationVal : "");
+
+        await Store.create({
+          vendor: req.user.id,
+          storeName: businessName,
+          slug: slugCandidate,
+          description: description || "",
+          contactEmail: email,
+          contactPhone: phone,
+          logo: logoUrl || "",
+          banner: bannerUrl || "",
+          location: locationVal || cityStr,
+          address: {
+            street: streetStr,
+            city: cityStr,
+            country: (typeof address === "object" && address?.country) || "Rwanda",
+          },
+          businessAddress: streetStr || cityStr,
+          status: "ACTIVE",
+        });
+      }
+    } catch (storeErr) {
+      // Non-fatal
+      console.error("Auto-sync Store error on vendor onboarding:", storeErr.message);
+    }
 
     return res.status(201).json({ message: "Vendor profile created", vendor });
   } catch (error) {
@@ -67,7 +210,7 @@ exports.updateMyProfile = async (req, res) => {
       return res.status(404).json({ message: "Vendor profile not found. Please complete onboarding." });
     }
 
-    const { businessName, description, phone, email, logoUrl, bannerUrl, location } = req.body;
+    const { businessName, description, phone, email, logoUrl, bannerUrl, location, address } = req.body;
 
     // Editable fields — excludes verificationStatus, ratingAvg, status, commissionRate
     if (businessName !== undefined) vendor.businessName = businessName;
@@ -76,9 +219,42 @@ exports.updateMyProfile = async (req, res) => {
     if (email !== undefined) vendor.email = email;
     if (logoUrl !== undefined) vendor.logoUrl = logoUrl;
     if (bannerUrl !== undefined) vendor.bannerUrl = bannerUrl;
-    if (location !== undefined) vendor.location = location;
+    if (location !== undefined) {
+      vendor.location = location;
+    } else if (address !== undefined) {
+      vendor.location = typeof address === "object" ? (address.city || address.street) : address;
+    }
 
     await vendor.save();
+
+    // Sync Store record
+    try {
+      const Store = require("../models/Store");
+      const store = await Store.findOne({ vendor: req.user.id });
+      if (store) {
+        if (businessName !== undefined) store.storeName = businessName;
+        if (description !== undefined) store.description = description;
+        if (phone !== undefined) store.contactPhone = phone;
+        if (email !== undefined) store.contactEmail = email;
+        if (logoUrl !== undefined) store.logo = logoUrl;
+        if (bannerUrl !== undefined) store.banner = bannerUrl;
+        if (location !== undefined || address !== undefined) {
+          const loc = location !== undefined ? location : address;
+          store.location = loc;
+          const cityStr = typeof loc === "string" ? loc : (loc?.city || store.address?.city || "Kigali");
+          const streetStr = typeof address === "object" && address?.street ? address.street : (store.address?.street || "");
+          store.address = {
+            street: streetStr,
+            city: cityStr,
+            country: store.address?.country || "Rwanda",
+          };
+        }
+        await store.save();
+      }
+    } catch (storeErr) {
+      console.error("Auto-sync Store error on vendor profile update:", storeErr.message);
+    }
+
     return res.status(200).json({ message: "Vendor profile updated", vendor });
   } catch (error) {
     if (error.code === 11000) {
@@ -172,7 +348,9 @@ exports.adminGetVendors = async (req, res) => {
     ]);
 
     // Enrich with per-vendor product counts + category breakdown for admin tables
-    const vendorIds = vendors.map((v) => v._id);
+    // Product.vendor stores the owner User ID, not the Vendor profile ID.
+    // Aggregate against populated owner IDs so admin product counts match the catalog.
+    const vendorIds = vendors.map((v) => v.user?._id || v.user).filter(Boolean);
     let productStats = [];
     if (vendorIds.length) {
       productStats = await Product.aggregate([
@@ -187,7 +365,8 @@ exports.adminGetVendors = async (req, res) => {
 
     const statsByVendor = new Map(productStats.map((s) => [String(s._id), s]));
     const enriched = vendors.map((v) => {
-      const stats = statsByVendor.get(String(v._id)) || { productCount: 0, categories: [] };
+      const ownerId = v.user?._id || v.user;
+      const stats = statsByVendor.get(String(ownerId)) || { productCount: 0, categories: [] };
       const categories = (stats.categories || [])
         .map((cid) => catName[String(cid)] || null)
         .filter(Boolean);

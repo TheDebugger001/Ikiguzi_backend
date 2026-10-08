@@ -119,42 +119,38 @@ exports.directCheckout = async (req, res) => {
     }
 
     const orderItems = [];
+    const productsToDecrement = [];
+    const reservedQuantities = new Map();
     let calculatedTotal = 0;
 
     for (const item of items) {
-      let resolvedVendor = (item.vendor && mongoose.isValidObjectId(item.vendor)) ? item.vendor : null;
-      let resolvedName = item.name;
-      let resolvedPrice = Number(item.price) || 0;
-      let resolvedProduct = null;
-      let resolvedImage = item.image || "";
-
-      // If a real productId (MongoDB ObjectId) is provided, look it up
-      if (item.productId && mongoose.isValidObjectId(item.productId)) {
-        const product = await Product.findById(item.productId);
-        if (product && product.status !== "INACTIVE") {
-          resolvedProduct = product._id;
-          resolvedVendor = product.vendor || resolvedVendor;
-          resolvedName = product.name;
-          resolvedPrice = product.discountPrice || product.price;
-          resolvedImage = product.media?.mainImage || resolvedImage;
-
-          if (product.stockQuantity < (Number(item.qty) || 1)) {
-            return res.status(400).json({
-              message: `Insufficient stock for ${product.name}. Available: ${product.stockQuantity}`,
-            });
-          }
-
-          product.stockQuantity -= (Number(item.qty) || 1);
-          if (product.stockQuantity <= 0) {
-            product.stockQuantity = 0;
-            product.status = "OUT_OF_STOCK";
-          }
-          await product.save();
-        }
+      if (!item.productId || !mongoose.isValidObjectId(item.productId)) {
+        return res.status(400).json({ message: "Every checkout item must reference a valid product." });
       }
-
-      const qty = Number(item.qty || item.quantity) || 1;
+      const product = await Product.findById(item.productId);
+      if (!product || ["INACTIVE", "OUT_OF_STOCK"].includes(product.status)) {
+        return res.status(400).json({ message: "A product in your cart is no longer available." });
+      }
+      const qty = Number(item.qty || item.quantity);
+      if (!Number.isInteger(qty) || qty < 1) {
+        return res.status(400).json({ message: "Product quantity must be a positive whole number." });
+      }
+      const productKey = product._id.toString();
+      const reservedQty = (reservedQuantities.get(productKey) || 0) + qty;
+      if (product.stockQuantity < reservedQty) {
+        return res.status(400).json({
+          message: `Insufficient stock for ${product.name}. Available: ${product.stockQuantity}`,
+        });
+      }
+      reservedQuantities.set(productKey, reservedQty);
+      const resolvedPrice = product.discountPrice || product.price;
       calculatedTotal += resolvedPrice * qty;
+      const resolvedProduct = product._id;
+      const resolvedVendor = product.vendor || null;
+      const resolvedName = product.name;
+      const resolvedImage = product.media?.mainImage || "";
+
+      productsToDecrement.push({ product, qty });
 
       orderItems.push({
         product: resolvedProduct,
@@ -179,6 +175,12 @@ exports.directCheckout = async (req, res) => {
       orderStatus: "PENDING",
       deliveryOtp: otp,
     });
+
+    for (const { product, qty } of productsToDecrement) {
+      product.stockQuantity = Math.max(0, product.stockQuantity - qty);
+      if (product.stockQuantity === 0) product.status = "OUT_OF_STOCK";
+      await product.save();
+    }
 
     // Notify connected clients in real-time
     socketService.emitOrderCreated(order);
@@ -208,7 +210,12 @@ exports.getMyOrders = async (req, res) => {
 // @access  Private
 exports.getOrderById = async (req, res) => {
   try {
-    const order = await Order.findById(req.params.id)
+    const { id } = req.params;
+    if (!id || id === "undefined" || !mongoose.isValidObjectId(id)) {
+      return res.status(400).json({ message: "A valid order ID is required." });
+    }
+
+    const order = await Order.findById(id)
       .populate("user", "Fullname email")
       .populate("items.vendor", "Fullname companyName email");
 
@@ -238,14 +245,18 @@ exports.getOrderById = async (req, res) => {
 // @access  Private (Vendor)
 exports.getVendorOrders = async (req, res) => {
   try {
-    const orders = await Order.find({ "items.vendor": req.user.id })
+    const vendorId = req.vendorId || req.targetVendorId || req.user.id;
+    const vendorIds = [req.user.id.toString()];
+    if (vendorId) vendorIds.push(vendorId.toString());
+
+    const orders = await Order.find({ "items.vendor": { $in: [req.user.id, vendorId] } })
       .populate("user", "Fullname email")
       .sort({ createdAt: -1 });
 
     // Filter order items to only include products belonging to this vendor
     const filteredOrders = orders.map((order) => {
       const vendorItems = order.items.filter(
-        (item) => item.vendor && item.vendor.toString() === req.user.id.toString(),
+        (item) => item.vendor && vendorIds.includes(item.vendor.toString()),
       );
 
       return {
@@ -305,8 +316,12 @@ exports.updateVendorOrderStatus = async (req, res) => {
     }
 
     // Verify vendor ownership
+    const vendorId = req.vendorId || req.targetVendorId || req.user.id;
+    const vendorIds = [req.user.id.toString()];
+    if (vendorId) vendorIds.push(vendorId.toString());
+
     const hasVendorItems = order.items && order.items.some(
-      (item) => item.vendor && item.vendor.toString() === req.user.id.toString(),
+      (item) => item.vendor && vendorIds.includes(item.vendor.toString()),
     );
 
     if (!hasVendorItems && req.user.role !== "super_admin") {
@@ -346,7 +361,7 @@ exports.updateVendorOrderStatus = async (req, res) => {
 
     // Trigger payout release if order is marked as DELIVERED
     if (status === "DELIVERED") {
-      await payoutController.releaseOrderEarnings(order._id, req.user.id);
+      await payoutController.releaseOrderEarnings(order._id, vendorId);
     }
 
     return res.status(200).json({
@@ -541,11 +556,14 @@ exports.cancelOrderByBuyer = async (req, res) => {
     if (["CANCELLED", "REFUNDED", "COMPLETED", "DELIVERED", "RETURNED"].includes(order.orderStatus)) {
       return res.status(400).json({ message: "This order cannot be cancelled anymore." });
     }
+    if (!["PENDING", "CONFIRMED", "PROCESSING"].includes(order.orderStatus)) {
+      return res.status(400).json({ message: "This order is already being fulfilled and cannot be cancelled." });
+    }
 
-    // Use the latest successful payment timestamp as the paid time
+    // The cancellation deadline is fixed from order creation time.
     const payment = await Payment.findOne({ parentOrder: order._id, status: "SUCCESS" }).sort({ createdAt: -1 });
-    const paidAt = payment && (payment.paidAt || payment.createdAt) ? payment.paidAt || payment.createdAt : null;
-    if (!paidAt || Date.now() - new Date(paidAt).getTime() > BUYER_CANCEL_WINDOW_MS) {
+    const cancellationDeadline = new Date(order.createdAt).getTime() + BUYER_CANCEL_WINDOW_MS;
+    if (!order.createdAt || !Number.isFinite(cancellationDeadline) || Date.now() >= cancellationDeadline) {
       return res.status(400).json({ message: "The 30-minute cancellation period has ended." });
     }
 

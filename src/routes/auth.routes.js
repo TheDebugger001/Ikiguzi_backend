@@ -29,5 +29,6 @@ router.get("/me", async (req, res) => {
 
 router.route("/addresses").get(auth.getAddresses).post(auth.addAddress);
 router.route("/addresses/:addressId").put(auth.updateAddress).delete(auth.deleteAddress);
+router.post("/change-password", auth.changePassword);
 
 module.exports = router;

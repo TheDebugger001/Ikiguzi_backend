@@ -14,6 +14,8 @@ router.post("/pay", protect, initiatePaypackPayment);
 
 // Initiate MTN MoMo Push Notification (via Paypack)
 router.post("/pay/momo", protect, initiateMomoPayment);
+// Backward-compatible alias for clients still calling the previous path.
+router.post("/momo/initiate", protect, initiateMomoPayment);
 
 // Initiate Airtel Money Push Notification (via Paypack)
 router.post("/pay/airtel", protect, initiateAirtelPayment);
