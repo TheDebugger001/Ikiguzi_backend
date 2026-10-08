@@ -29,6 +29,9 @@ const getGoogleClient = () => {
 
 // ─── HELPER: SIGN JWT & BUILD SANITIZED USER RESPONSE ───────────────────────
 const Staff = require("../models/Staff");
+const Vendor = require("../models/Vendor");
+const Supplier = require("../models/Supplier");
+const SupplierTeamMember = require("../models/SupplierTeamMember");
 
 const getStaffDetailsForUser = async (userId) => {
   try {
@@ -80,6 +83,13 @@ const buildUserResponse = (u, staffDetails = null) => ({
   phone: u.phone || null,
   gender: u.gender || null,
   companyName: u.companyName || null,
+  businessName: u.businessName || u.companyName || null,
+  description: u.description || "",
+  logoUrl: u.logoUrl || null,
+  category: u.category || "",
+  location: u.location || null,
+  isOnboarded: u.isOnboarded,
+  verificationStatus: u.verificationStatus,
   lastPasswordChangeAt: u.lastPasswordChangeAt,
   isStaff: Boolean(staffDetails),
   isVendorStaff: Boolean(staffDetails),
@@ -94,6 +104,28 @@ const buildUserResponse = (u, staffDetails = null) => ({
 const buildAuthenticatedUserResponse = async (user, staffDetails = null) => {
   const details = staffDetails || await getStaffDetailsForUser(user._id);
   const response = buildUserResponse(user, details);
+  if (user.role === "vendor" || user.role === "supplier") {
+    const Profile = user.role === "vendor" ? Vendor : Supplier;
+    let profile = await Profile.findOne({ user: user._id }).lean();
+    if (!profile && user.role === "supplier") {
+      const membership = await SupplierTeamMember.findOne({ user: user._id, status: "ACTIVE" }).lean();
+      if (membership) profile = await Supplier.findById(membership.supplier).lean();
+    }
+    const requiredComplete = Boolean(
+      profile?.businessName && profile?.email && profile?.phone &&
+      profile?.description && profile?.logoUrl && profile?.category && profile?.location,
+    );
+    response.isOnboarded = requiredComplete;
+    response.verificationStatus = profile?.verificationStatus || "UNVERIFIED";
+    response.businessName = profile?.businessName || response.companyName;
+    response.logoUrl = profile?.logoUrl || null;
+    response.description = profile?.description || "";
+    response.category = profile?.category || "";
+    response.location = profile?.location || null;
+  } else {
+    response.isOnboarded = true;
+    response.verificationStatus = "VERIFIED";
+  }
   const membership = await vendorStaffInvitation.getActiveMembership(user._id);
   if (!membership) return response;
   return {
@@ -233,7 +265,7 @@ exports.registerUser = async (req, res) => {
       gender,
       phone: verifiedPhone,
       role: accountRole,
-      companyName: accountRole === "vendor" ? companyName.trim() : undefined,
+      companyName: ["vendor", "supplier"].includes(accountRole) && companyName ? companyName.trim() : undefined,
     });
 
     // Save the user to the database

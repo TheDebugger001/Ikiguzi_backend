@@ -42,14 +42,14 @@ const userSchema = new mongoose.Schema(
       type: String,
       required: function () {
         // Required only if user did NOT register via Google OAuth
-        return !this.googleId && !this.isVendorStaff;
+        return !this.googleId && !this.isVendorStaff && !this.isSupplierStaff;
       },
     },
     gender: {
       type: String,
       enum: ["male", "female", "other"],
       required: function () {
-        return !this.googleId && !this.isVendorStaff;
+        return !this.googleId && !this.isVendorStaff && !this.isSupplierStaff;
       },
     },
     phone: {
@@ -59,7 +59,7 @@ const userSchema = new mongoose.Schema(
       unique: true,
       sparse: true,
       required: function () {
-        return !this.googleId && !this.isVendorStaff;
+        return !this.googleId && !this.isVendorStaff && !this.isSupplierStaff;
       },
       validate: {
         validator: function (v) {
@@ -99,12 +99,20 @@ const userSchema = new mongoose.Schema(
         return this.role === "vendor" && !this.isVendorStaff;
       },
     },
+    businessName: { type: String, default: "" },
+    description: { type: String, default: "" },
+    logoUrl: { type: String, default: "" },
+    category: { type: String, default: "" },
+    location: { type: mongoose.Schema.Types.Mixed, default: null },
+    isOnboarded: { type: Boolean, default: function () { return !["vendor", "supplier"].includes(this.role); } },
+    verificationStatus: { type: String, enum: ["UNVERIFIED", "PENDING", "VERIFIED", "REJECTED"], default: function () { return ["vendor", "supplier"].includes(this.role) ? "UNVERIFIED" : "VERIFIED"; } },
 
     addresses: [addressSchema],
 
     resetPasswordToken: { type: String },
     resetPasswordExpires: { type: Date },
     isVendorStaff: { type: Boolean, default: false, select: false },
+    isSupplierStaff: { type: Boolean, default: false, select: false },
     lastPasswordChangeAt: { type: Date },
   },
   { timestamps: true },

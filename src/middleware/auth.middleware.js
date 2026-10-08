@@ -1,5 +1,8 @@
 const jwt = require("jsonwebtoken");
 const User = require("../models/User"); // Adjust path to your User model
+const Vendor = require("../models/Vendor");
+const Supplier = require("../models/Supplier");
+const SupplierTeamMember = require("../models/SupplierTeamMember");
 
 exports.protect = async (req, res, next) => {
   let token;
@@ -48,4 +51,19 @@ exports.authorize = (...roles) => {
     }
     next();
   };
+};
+
+exports.requireOnboarded = async (req, res, next) => {
+  if (!["vendor", "supplier"].includes(req.user.role) || (req.user.role === "super_admin" && req.user.isSellerEnabled)) return next();
+  const Profile = req.user.role === "vendor" ? Vendor : Supplier;
+  let profile = await Profile.findOne({ user: req.user._id }).lean();
+  if (!profile && req.user.role === "supplier") {
+    const membership = await SupplierTeamMember.findOne({ user: req.user._id, status: "ACTIVE" }).lean();
+    if (membership) profile = await Supplier.findById(membership.supplier).lean();
+  }
+  const complete = Boolean(profile?.businessName && profile?.email && profile?.phone && profile?.description && profile?.logoUrl && profile?.category && profile?.location);
+  if (!complete) {
+    return res.status(403).json({ message: "Complete onboarding before using this action.", code: "ONBOARDING_REQUIRED" });
+  }
+  return next();
 };

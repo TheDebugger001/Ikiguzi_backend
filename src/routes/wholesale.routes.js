@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const wholesaleController = require("../controllers/wholesale.controller");
-const { protect, authorize } = require("../middleware/auth.middleware"); // Adjust import path if needed
+const { protect, authorize, requireOnboarded } = require("../middleware/auth.middleware"); // Adjust import path if needed
 
 // Vendor creates supply order (MOQ check enforced)
 router.get(
@@ -14,6 +14,7 @@ router.post(
   "/orders",
   protect,
   authorize("vendor", "super_admin"),
+  requireOnboarded,
   wholesaleController.createWholesaleOrder
 );
 
@@ -22,6 +23,7 @@ router.post(
   "/orders/:orderId/ship",
   protect,
   authorize("supplier"),
+  requireOnboarded,
   wholesaleController.markShipped
 );
 

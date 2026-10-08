@@ -104,14 +104,11 @@ exports.onboardVendor = async (req, res) => {
     }
 
     const existing = await Vendor.findOne({ user: req.user.id });
-    if (existing) {
-      return res.status(409).json({ message: "Vendor profile already exists" });
-    }
+    const created = !existing;
+    const { businessName, description, phone, email, logoUrl, category, bannerUrl, location, address } = req.body;
 
-    const { businessName, description, phone, email, logoUrl, bannerUrl, location, address } = req.body;
-
-    if (!businessName || !phone || !email) {
-      return res.status(400).json({ message: "businessName, phone, and email are required" });
+    if (!businessName || !phone || !email || !description || !logoUrl || !category || !(location || address)) {
+      return res.status(400).json({ message: "Business name, phone, email, description, logo, category, and location are required." });
     }
 
     let locationVal = location !== undefined ? location : null;
@@ -119,16 +116,10 @@ exports.onboardVendor = async (req, res) => {
       locationVal = typeof address === "object" ? (address.city || address.street) : address;
     }
 
-    const vendor = await Vendor.create({
-      user: req.user.id,
-      businessName,
-      description,
-      phone,
-      email,
-      logoUrl,
-      bannerUrl,
-      location: locationVal,
-    });
+    const vendor = existing || new Vendor({ user: req.user.id });
+    Object.assign(vendor, { businessName, description, phone, email, logoUrl, category, bannerUrl, location: locationVal, verificationStatus: "PENDING" });
+    await vendor.save();
+    await User.findByIdAndUpdate(req.user.id, { companyName: businessName, businessName, description, logoUrl, category, location: locationVal, isOnboarded: true, verificationStatus: "PENDING" });
 
     // Auto-sync Store record so all store/staff/settings endpoints function seamlessly
     try {
@@ -176,7 +167,7 @@ exports.onboardVendor = async (req, res) => {
       console.error("Auto-sync Store error on vendor onboarding:", storeErr.message);
     }
 
-    return res.status(201).json({ message: "Vendor profile created", vendor });
+    return res.status(created ? 201 : 200).json({ message: created ? "Vendor profile created" : "Vendor profile updated", vendor });
   } catch (error) {
     if (error.code === 11000) {
       return res.status(409).json({ message: "A vendor with this business name already exists" });
@@ -405,6 +396,7 @@ exports.adminVerifyVendor = async (req, res) => {
 
     vendor.verificationStatus = decision;
     await vendor.save();
+    await User.findByIdAndUpdate(vendor.user, { verificationStatus: decision });
 
     return res.status(200).json({ message: `Vendor ${decision.toLowerCase()}`, vendor });
   } catch (error) {

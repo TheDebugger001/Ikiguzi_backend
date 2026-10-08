@@ -8,6 +8,7 @@ const supplierTeamMemberSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
+    user: { type: mongoose.Schema.Types.ObjectId, ref: "User", index: true },
     fullName: { type: String, required: true, trim: true },
     phone: { type: String, required: true, trim: true },
     email: { type: String, default: "", trim: true, lowercase: true },

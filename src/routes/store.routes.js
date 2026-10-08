@@ -8,15 +8,16 @@ const {
   getPublicStoreBySlug,
 } = require("../controllers/store.controller");
 
-const { protect, authorize } = require("../middleware/auth.middleware");
+const { protect, authorize, requireOnboarded } = require("../middleware/auth.middleware");
+const { checkStaffPermission } = require("../middleware/staff.middleware");
 
 // Public route for Marketplace shoppers
 router.get("/public/:slug", getPublicStoreBySlug);
 
 // Vendor-protected routes
 router.use(protect);
-router.post("/", authorize("vendor"), createStore);
+router.post("/", authorize("vendor"), requireOnboarded, checkStaffPermission("canManageSettings"), createStore);
 router.get("/mine", authorize("vendor"), getMyStore);
-router.put("/mine", authorize("vendor"), updateMyStore);
+router.put("/mine", authorize("vendor"), requireOnboarded, checkStaffPermission("canManageSettings"), updateMyStore);
 
 module.exports = router;

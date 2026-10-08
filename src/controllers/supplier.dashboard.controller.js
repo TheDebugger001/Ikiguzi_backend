@@ -1,4 +1,6 @@
 const mongoose = require("mongoose");
+const bcrypt = require("bcryptjs");
+const User = require("../models/User");
 const crypto = require("crypto");
 const Supplier = require("../models/Supplier");
 const SupplierSupplyRequest = require("../models/SupplierSupplyRequest");
@@ -15,7 +17,11 @@ const countedOrderStatuses = ["ESCROW_HELD", "SHIPPED", "DELIVERED", "CONFIRMED_
 const reviewableOrderStatuses = ["CONFIRMED_RELEASED", "DELIVERED"];
 
 async function findSupplier(userId) {
-  const supplier = await Supplier.findOne({ user: userId });
+  let supplier = await Supplier.findOne({ user: userId });
+  if (!supplier) {
+    const membership = await SupplierTeamMember.findOne({ user: userId, status: "ACTIVE" });
+    if (membership) supplier = await Supplier.findById(membership.supplier);
+  }
   if (!supplier) {
     const error = new Error("Supplier profile not found. Complete supplier onboarding first.");
     error.statusCode = 404;
@@ -724,19 +730,25 @@ exports.addTeamMember = async (req, res) => {
     const supplier = await findSupplier(req.user._id);
     const fullName = String(req.body.fullName || "").trim();
     const phone = String(req.body.phone || "").trim();
+    const email = String(req.body.email || "").trim().toLowerCase();
+    const password = req.body.password;
     const role = String(req.body.role || "VIEWER").toUpperCase();
     const allowedRoles = ["OPERATIONS", "WAREHOUSE", "FULFILMENT", "FINANCE", "VIEWER"];
-    if (!fullName || !phone) return res.status(400).json({ message: "Full name and phone are required." });
+    if (!fullName || !phone || !email || typeof password !== "string") return res.status(400).json({ message: "Full name, phone, email, and password are required." });
+    if (password.length < 8) return res.status(400).json({ message: "Password must be at least 8 characters." });
     if (!allowedRoles.includes(role)) return res.status(400).json({ message: "Choose a supported staff role." });
+    if (await User.findOne({ email })) return res.status(409).json({ message: "An account with this email already exists." });
+    const user = await User.create({ Fullname: fullName, email, phone, password: await bcrypt.hash(password, 10), gender: "other", role: "supplier", isSupplierStaff: true, status: "ACTIVE" });
     const member = await SupplierTeamMember.create({
       supplier: supplier._id,
+      user: user._id,
       fullName,
       phone,
-      email: String(req.body.email || "").trim(),
+      email,
       role,
       note: String(req.body.note || "").trim(),
     });
-    return res.status(201).json({ member });
+    return res.status(201).json({ member: { ...member.toObject(), user: user._id } });
   } catch (error) {
     return sendError(res, error);
   }
@@ -747,6 +759,7 @@ exports.updateTeamMember = async (req, res) => {
     const supplier = await findSupplier(req.user._id);
     const member = await SupplierTeamMember.findOne({ _id: req.params.memberId, supplier: supplier._id });
     if (!member) return res.status(404).json({ message: "Team member not found." });
+    if (member.user) await User.findByIdAndUpdate(member.user, { status: "SUSPEND" });
     const allowedRoles = ["OPERATIONS", "WAREHOUSE", "FULFILMENT", "FINANCE", "VIEWER"];
     const allowedStatuses = ["ACTIVE", "INVITED", "SUSPENDED"];
     if (req.body.role !== undefined) {

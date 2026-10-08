@@ -17,6 +17,11 @@ const imageTypes = {
   "image/webp": { extension: ".webp", matches: (b) => b.length >= 12 && b.toString("ascii", 0, 4) === "RIFF" && b.toString("ascii", 8, 12) === "WEBP" },
 };
 
+function allowOnboardingOrProductUpload(req, res, next) {
+  if (["vendor", "supplier", "super_admin"].includes(req.user?.role)) return next();
+  return checkStaffPermission("canManageProducts")(req, res, next);
+}
+
 function parseMultipart(body, boundary) {
   const delimiter = Buffer.from(`--${boundary}`);
   const separator = Buffer.from(`\r\n--${boundary}`);
@@ -58,7 +63,7 @@ async function readRequestBody(req, res) {
   return Buffer.concat(chunks, size);
 }
 
-router.post("/images", protect, checkStaffPermission("canManageProducts"), async (req, res) => {
+router.post("/images", protect, allowOnboardingOrProductUpload, async (req, res) => {
   try {
     const contentType = req.headers["content-type"] || "";
     const boundary = contentType.match(/^multipart\/form-data\s*;\s*boundary=(?:"([^"]+)"|([^;\s]+))/i);

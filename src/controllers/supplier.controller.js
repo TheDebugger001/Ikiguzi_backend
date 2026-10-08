@@ -1,11 +1,16 @@
 const mongoose = require("mongoose");
 const Supplier = require("../models/Supplier");
+const SupplierTeamMember = require("../models/SupplierTeamMember");
 const Product = require("../models/Product");
 const WholesaleProduct = require("../models/WholesaleProduct");
 
 // Resolve the signed-in supplier's profile document (used by wholesale CRUD).
 async function resolveMySupplier(userId) {
-  const supplier = await Supplier.findOne({ user: userId });
+  let supplier = await Supplier.findOne({ user: userId });
+  if (!supplier) {
+    const membership = await SupplierTeamMember.findOne({ user: userId, status: "ACTIVE" });
+    if (membership) supplier = await Supplier.findById(membership.supplier);
+  }
   if (!supplier) {
     const error = new Error("Supplier profile not found. Please complete onboarding.");
     error.status = 404;
@@ -40,27 +45,19 @@ exports.onboardSupplier = async (req, res) => {
     }
 
     const existing = await Supplier.findOne({ user: req.user.id });
-    if (existing) {
-      return res.status(409).json({ message: "Supplier profile already exists" });
+    const created = !existing;
+    const { businessName, description, phone, email, logoUrl, category, location } = req.body;
+
+    if (!businessName || !phone || !email || !description || !logoUrl || !category || !location) {
+      return res.status(400).json({ message: "Business name, phone, email, description, logo, category, and location are required." });
     }
 
-    const { businessName, description, phone, email, logoUrl, location } = req.body;
+    const supplier = existing || new Supplier({ user: req.user.id });
+    Object.assign(supplier, { businessName, description, phone, email, logoUrl, category, location, verificationStatus: "PENDING" });
+    await supplier.save();
+    await require("../models/User").findByIdAndUpdate(req.user.id, { companyName: businessName, businessName, description, logoUrl, category, location, isOnboarded: true, verificationStatus: "PENDING" });
 
-    if (!businessName || !phone || !email) {
-      return res.status(400).json({ message: "businessName, phone, and email are required" });
-    }
-
-    const supplier = await Supplier.create({
-      user: req.user.id,
-      businessName,
-      description,
-      phone,
-      email,
-      logoUrl,
-      location: location || null,
-    });
-
-    return res.status(201).json({ message: "Supplier profile created", supplier });
+    return res.status(created ? 201 : 200).json({ message: created ? "Supplier profile created" : "Supplier profile updated", supplier });
   } catch (error) {
     if (error.code === 11000) {
       return res.status(409).json({ message: "A supplier with this business name already exists" });
@@ -259,6 +256,7 @@ exports.adminVerifySupplier = async (req, res) => {
 
     supplier.verificationStatus = decision;
     await supplier.save();
+    await require("../models/User").findByIdAndUpdate(supplier.user, { verificationStatus: decision });
 
     // TODO: trigger notification to supplier (doc: "Order accepted / Payment received" style events)
 

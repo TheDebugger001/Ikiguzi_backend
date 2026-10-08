@@ -2,7 +2,7 @@ const express = require("express");
 const router = express.Router();
 const supplier = require("../controllers/supplier.controller");
 const dashboard = require("../controllers/supplier.dashboard.controller");
-const { protect, authorize } = require("../middleware/auth.middleware");
+const { protect, authorize, requireOnboarded } = require("../middleware/auth.middleware");
 const requireSupplier = [protect, authorize("supplier")];
 
 // ─── PUBLIC ROUTES ──────────────────────────────────────────────────────────
@@ -12,9 +12,9 @@ router.get("/", supplier.getSuppliers);                    // GET /api/suppliers
 // NOTE: /me/* must be registered ahead of /:idOrSlug and /:id/products so that
 // "me" is interpreted as a self-reference instead of a supplier id.
 router.get("/me/products", protect, authorize("supplier"), supplier.getMyWholesaleProducts);
-router.post("/me/products", protect, authorize("supplier"), supplier.createWholesaleProduct);
-router.put("/me/products/:productId", protect, authorize("supplier"), supplier.updateWholesaleProduct);
-router.delete("/me/products/:productId", protect, authorize("supplier"), supplier.deleteWholesaleProduct);
+router.post("/me/products", protect, authorize("supplier"), requireOnboarded, supplier.createWholesaleProduct);
+router.put("/me/products/:productId", protect, authorize("supplier"), requireOnboarded, supplier.updateWholesaleProduct);
+router.delete("/me/products/:productId", protect, authorize("supplier"), requireOnboarded, supplier.deleteWholesaleProduct);
 
 // Supplier dashboard: finance, analytics, operations, reviews and roster.
 router.get("/me/finance/summary", ...requireSupplier, dashboard.getFinanceSummary);

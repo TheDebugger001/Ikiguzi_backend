@@ -29,13 +29,6 @@ router.get("/:id", getOrderById);
 router.post("/:id/cancel", protect, cancelOrderByBuyer);
 router.patch(
   "/vendor/status",
-  protect,
-  authorize("vendor", "super_admin"),
-  updateVendorOrderStatus,
-);
-
-router.patch(
-  "/vendor/status",
   checkStaffPermission("canManageOrders"),
   updateVendorOrderStatus,
 );

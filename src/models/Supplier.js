@@ -17,6 +17,7 @@ const supplierSchema = new mongoose.Schema(
     slug: { type: String, unique: true },
     logoUrl: { type: String, default: null },
     description: { type: String, default: "" },
+    category: { type: String, default: "" },
 
     phone: { type: String, required: true },
     email: { type: String, required: true, lowercase: true, trim: true },

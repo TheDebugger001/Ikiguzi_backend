@@ -12,7 +12,7 @@ const {
 const { checkStaffPermission } = require("../middleware/staff.middleware");
 
 const { protect } = require("../middleware/auth.middleware");
-const { authorize } = require("../middleware/auth.middleware");
+const { authorize, requireOnboarded } = require("../middleware/auth.middleware");
 
 // Public route for Buyers & Admin to browse products
 router.get("/", getAllProducts);
@@ -36,9 +36,9 @@ router.get("/:id", getProductById);
 // Staff with the 'canManageProducts' permission can manage on behalf of the store owner.
 // checkStaffPermission already passes through if the user IS the store owner or super_admin,
 // so it covers all three cases in a single middleware chain.
-router.post("/", checkStaffPermission("canManageProducts"), createProduct);
-router.put("/:id", checkStaffPermission("canManageProducts"), updateProduct);
-router.delete("/:id", checkStaffPermission("canManageProducts"), deleteProduct);
+router.post("/", requireOnboarded, checkStaffPermission("canManageProducts"), createProduct);
+router.put("/:id", requireOnboarded, checkStaffPermission("canManageProducts"), updateProduct);
+router.delete("/:id", requireOnboarded, checkStaffPermission("canManageProducts"), deleteProduct);
 
 
 module.exports = router;
