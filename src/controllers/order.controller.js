@@ -205,6 +205,26 @@ exports.getMyOrders = async (req, res) => {
   }
 };
 
+// @desc    Get paid orders awaiting delivery confirmation
+// @route   GET /api/orders/deliverable
+exports.getDeliverable = async (req, res) => {
+  try {
+    const query = {
+      paymentStatus: "PAID",
+      orderStatus: { $nin: ["DELIVERED", "COMPLETED", "CANCELLED", "REFUNDED", "FAILED"] },
+    };
+    if (req.user.role === "vendor") query["items.vendor"] = req.user.id;
+
+    const orders = await Order.find(query)
+      .populate("user", "Fullname email phone")
+      .populate("items.vendor", "Fullname companyName email")
+      .sort({ createdAt: -1 });
+    return res.status(200).json({ orders });
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+};
+
 // @desc    Get single order details
 // @route   GET /api/orders/:id
 // @access  Private
@@ -458,6 +478,12 @@ exports.confirmOrderDelivery = async (req, res) => {
   try {
     const { id } = req.params;
     const { deliveryOtp } = req.body; // Proof of delivery check
+
+    if (!id || id === "undefined" || !mongoose.isValidObjectId(id)) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ message: "A valid order ID is required." });
+    }
 
     const order = await Order.findById(id).session(session);
     if (!order) {

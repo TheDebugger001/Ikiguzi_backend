@@ -1,5 +1,8 @@
 const mongoose = require("mongoose");
+const jwt = require("jsonwebtoken");
 const Category = require("../models/Category");
+const Product = require("../models/Product");
+const User = require("../models/User");
 
 // Helper: turn a name into a slug
 const slugify = (str) =>
@@ -8,6 +11,56 @@ const slugify = (str) =>
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/(^-|-$)/g, "");
+
+// ─── OPTIONAL REQUESTER RESOLUTION ─────────────────────────────────────────
+// GET /api/categories is a public route, but the dashboard still sends its
+// Bearer token. We resolve the caller on a best-effort basis (never failing the
+// request) so we can also return per-vendor product counts.
+const resolveRequester = async (req) => {
+  try {
+    const header = req.headers.authorization || "";
+    if (!header.startsWith("Bearer ")) return null;
+    const token = header.split(" ")[1];
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    return await User.findById(decoded.userId || decoded.id).select("_id role").lean();
+  } catch (error) {
+    return null;
+  }
+};
+
+// ─── PRODUCT COUNTS (read live from the products collection) ───────────────
+// Returns each category as a plain object enriched with:
+//   productCount   - every product in this category (marketplace-wide)
+//   myProductCount - only the requesting user's products (when identified)
+const attachProductCounts = async (categories, requester) => {
+  const rows = categories.map((cat) => cat.toObject ? cat.toObject() : { ...cat });
+  if (!rows.length) return rows;
+
+  const group = {
+    _id: "$category",
+    productCount: { $sum: 1 },
+  };
+  if (requester?._id) {
+    group.myProductCount = {
+      $sum: { $cond: [{ $eq: ["$vendor", requester._id] }, 1, 0] },
+    };
+  }
+
+  const counts = await Product.aggregate([
+    { $match: { category: { $in: rows.map((cat) => cat._id) } } },
+    { $group: group },
+  ]);
+  const countsByCategory = new Map(counts.map((c) => [String(c._id), c]));
+
+  return rows.map((cat) => {
+    const catCounts = countsByCategory.get(String(cat._id)) || {};
+    return {
+      ...cat,
+      productCount: Number(catCounts.productCount) || 0,
+      ...(requester?._id ? { myProductCount: Number(catCounts.myProductCount) || 0 } : {}),
+    };
+  });
+};
 
 // ─── CREATE CATEGORY ──────────────────────────────────────────────────────
 // @route   POST /api/categories        (admin, or /api/vendor/categories if permitted)
@@ -62,16 +115,18 @@ exports.createCategory = async (req, res) => {
 // @route   GET /api/categories?tree=true
 exports.getCategories = async (req, res) => {
   try {
+    const requester = await resolveRequester(req);
     const categories = await Category.find({ active: true }).sort({ sortOrder: 1, name: 1 });
+    const withCounts = await attachProductCounts(categories, requester);
 
     if (req.query.tree === "true") {
       const byId = {};
-      categories.forEach((cat) => {
-        byId[cat._id] = { ...cat.toObject(), children: [] };
+      withCounts.forEach((cat) => {
+        byId[cat._id] = { ...cat, children: [] };
       });
 
       const tree = [];
-      categories.forEach((cat) => {
+      withCounts.forEach((cat) => {
         if (cat.parentId) {
           byId[cat.parentId]?.children.push(byId[cat._id]);
         } else {
@@ -82,7 +137,7 @@ exports.getCategories = async (req, res) => {
       return res.status(200).json({ categories: tree });
     }
 
-    return res.status(200).json({ categories });
+    return res.status(200).json({ categories: withCounts });
   } catch (error) {
     console.error("Error fetching categories:", error);
     return res.status(500).json({ message: "Internal server error" });

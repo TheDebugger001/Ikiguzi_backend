@@ -2,7 +2,31 @@ const Product = require("../models/Product");
 const Category = require("../models/Category");
 const mongoose = require("mongoose");
 
-const normalizeProductPayload = (body = {}) => {
+// http(s)://<host>/uploads/<file> — the upload route used to return an absolute
+// URL built from the request host, so the host that happened to serve the
+// upload (localhost, a LAN IP, a tunnel domain) got baked into the database
+// and broke the image as soon as the storefront was opened from elsewhere.
+const UPLOAD_URL = /^https?:\/\/([^/:]+)(?::(\d+))?(\/uploads\/[^?#\s]+)$/i;
+
+// Store image references as host-agnostic root-relative paths (/uploads/x.jpg).
+// The frontend prepends its configured API origin when rendering, so the same
+// record works from localhost, a LAN IP or production.
+const toStoredUploadPath = (value, req) => {
+  if (typeof value !== "string") return value;
+  const match = UPLOAD_URL.exec(value.trim());
+  if (!match) return value;
+  const host = match[1].toLowerCase();
+  const origin = `${host}${match[2] ? `:${match[2]}` : ""}`;
+  const requestHost = String((req && req.get && req.get("host")) || "").toLowerCase();
+  const isSelf =
+    host === "localhost" ||
+    host === "127.0.0.1" ||
+    host === "0.0.0.0" ||
+    (requestHost && origin === requestHost);
+  return isSelf ? match[3] : value;
+};
+
+const normalizeProductPayload = (body = {}, req = null) => {
   const normalized = { ...body };
   const category = body.category ?? body.categoryId;
   if (category !== undefined) normalized.category = category;
@@ -10,6 +34,9 @@ const normalizeProductPayload = (body = {}) => {
   const media = { ...(body.media || {}) };
   if (body.mainImage !== undefined) media.mainImage = body.mainImage;
   if (body.gallery !== undefined) media.gallery = body.gallery;
+  if (media.mainImage !== undefined) media.mainImage = toStoredUploadPath(media.mainImage, req);
+  if (Array.isArray(media.gallery)) media.gallery = media.gallery.map((url) => toStoredUploadPath(url, req));
+  if (Array.isArray(media.thumbnails)) media.thumbnails = media.thumbnails.map((url) => toStoredUploadPath(url, req));
   if (Object.keys(media).length) normalized.media = media;
 
   const attributes = { ...(body.attributes || {}) };
@@ -96,7 +123,7 @@ exports.getVendorProducts = async (req, res) => {
 exports.createProduct = async (req, res) => {
   try {
     const vendorId = req.vendorId || req.targetVendorId || req.user.id;
-    const payload = normalizeProductPayload(req.body);
+    const payload = normalizeProductPayload(req.body, req);
     if (!mongoose.Types.ObjectId.isValid(payload.category)) {
       return res.status(400).json({ message: "Select a valid category from the category list." });
     }
@@ -161,7 +188,7 @@ exports.updateProduct = async (req, res) => {
     }
 
     // 2. Prepare payload copy
-    const updates = normalizeProductPayload(req.body);
+    const updates = normalizeProductPayload(req.body, req);
     if (updates.category !== undefined) {
       if (!mongoose.Types.ObjectId.isValid(updates.category)) {
         return res.status(400).json({ message: "Select a valid category from the category list." });
