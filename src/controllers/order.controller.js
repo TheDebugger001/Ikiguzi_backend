@@ -205,26 +205,6 @@ exports.getMyOrders = async (req, res) => {
   }
 };
 
-// @desc    Get paid orders awaiting delivery confirmation
-// @route   GET /api/orders/deliverable
-exports.getDeliverable = async (req, res) => {
-  try {
-    const query = {
-      paymentStatus: "PAID",
-      orderStatus: { $nin: ["DELIVERED", "COMPLETED", "CANCELLED", "REFUNDED", "FAILED"] },
-    };
-    if (req.user.role === "vendor") query["items.vendor"] = req.user.id;
-
-    const orders = await Order.find(query)
-      .populate("user", "Fullname email phone")
-      .populate("items.vendor", "Fullname companyName email")
-      .sort({ createdAt: -1 });
-    return res.status(200).json({ orders });
-  } catch (error) {
-    return res.status(500).json({ message: error.message });
-  }
-};
-
 // @desc    Get single order details
 // @route   GET /api/orders/:id
 // @access  Private
@@ -479,12 +459,6 @@ exports.confirmOrderDelivery = async (req, res) => {
     const { id } = req.params;
     const { deliveryOtp } = req.body; // Proof of delivery check
 
-    if (!id || id === "undefined" || !mongoose.isValidObjectId(id)) {
-      await session.abortTransaction();
-      session.endSession();
-      return res.status(400).json({ message: "A valid order ID is required." });
-    }
-
     const order = await Order.findById(id).session(session);
     if (!order) {
       await session.abortTransaction();
@@ -672,3 +646,43 @@ async function releaseVendorEscrowFunds(orderId, vendorId, session) {
     { session }
   );
 }
+
+// @desc    Get orders ready for delivery/pickup (vendor/courier view)
+exports.getDeliverableOrders = async (req, res) => {
+  try {
+    const vendorId = req.user.id;
+    const isVendor = req.user.role === "vendor";
+    const isAdmin = req.user.role === "super_admin" || req.user.role === "admin";
+    const isCourier = req.user.role === "courier";
+
+    let filter = {};
+    if (isVendor) {
+      filter = {
+        "items.vendor": vendorId,
+        $or: [
+          { orderStatus: "READY_FOR_SHIPMENT" },
+          { orderStatus: "SHIPPED" },
+          { orderStatus: "PROCESSING" },
+          { status: "CONFIRMED" },
+        ],
+      };
+    } else if (isCourier || isAdmin) {
+      filter = {
+        $or: [
+          { orderStatus: "READY_FOR_SHIPMENT" },
+          { orderStatus: "SHIPPED" },
+          { orderStatus: "READY_FOR_DELIVERY" },
+        ],
+      };
+    }
+
+    const orders = await Order.find(filter)
+      .populate("user", "Fullname email phone")
+      .populate("items.vendor", "Fullname companyName email")
+      .sort({ createdAt: -1 });
+
+    return res.status(200).json({ orders });
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+};

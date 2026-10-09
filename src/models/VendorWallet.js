@@ -33,6 +33,13 @@ const vendorWalletSchema = new mongoose.Schema(
       min: 0,
       required: true,
     },
+    // Debt owed back to the platform when a RELEASED settlement is clawed back
+    // after a refund. Future payouts are reduced by this balance.
+    clawbackBalance: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
     currency: {
       type: String,
       default: "RWF",

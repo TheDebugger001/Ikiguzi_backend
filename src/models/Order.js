@@ -92,8 +92,18 @@ const orderSchema = new mongoose.Schema(
     paymentReference: String,
     affiliateCode: { type: String, default: null },
     affiliateUser: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    // The AffiliateLink that produced this attribution (kept for reporting even
+    // if the link is later archived).
+    affiliateLink: { type: mongoose.Schema.Types.ObjectId, ref: "AffiliateLink", default: null },
+    // Product-scoped attribution: when set, only these product ids are
+    // commissionable. Empty/absent means storewide attribution.
+    affiliateProductIds: { type: [{ type: mongoose.Schema.Types.ObjectId, ref: "Product" }], default: [] },
+    // Effective commission rate applied at payment time (percent, e.g. 0.5).
+    affiliateCommissionRate: { type: Number, default: 0.5 },
   },
   { timestamps: true },
 );
+
+orderSchema.index({ affiliateUser: 1, createdAt: -1 });
 
 module.exports = mongoose.model("Order", orderSchema);

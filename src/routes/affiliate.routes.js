@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const affiliateController = require("../controllers/affiliate.controller");
-const { protect, authorize } = require("../middleware/auth.middleware");
+const { protect, authorize, optionalAuth } = require("../middleware/auth.middleware");
 
 // Affiliate dashboard (wallet, links, aggregates, own payouts)
 router.get("/me/dashboard", protect, affiliateController.getMyDashboard);
@@ -47,7 +47,8 @@ router.get("/", protect, authorize("super_admin"), affiliateController.adminList
 router.get("/admin/payouts", protect, authorize("super_admin"), affiliateController.adminListPayouts);
 
 // Public click tracking endpoint
-router.get("/track/:code", affiliateController.trackClick);
+router.get("/track/:code", optionalAuth, affiliateController.trackClick);
+router.post("/track", optionalAuth, affiliateController.trackClick);
 
 // Request Affiliate Balance Payout (10,000 RWF Enforced)
 router.post("/payouts/request", protect, affiliateController.requestPayout);

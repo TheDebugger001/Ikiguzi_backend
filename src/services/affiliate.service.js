@@ -53,19 +53,44 @@ class AffiliateService {
 
   /**
    * Register click with Fraud Guard (Self-referral & duplicate checks)
+   *
+   * The lifetime counter is bumped atomically and duplicates for the same
+   * visitor within 24h are ignored so repeated hits do not inflate stats.
    */
   async trackClick(affiliateCode, visitorIp, buyerUserId = null) {
     const link = await AffiliateLink.findOne({ affiliateCode, isActive: true });
     if (!link) throw new Error("Invalid or inactive affiliate link.");
+
+    // The affiliate must still be an ACTIVE platform user.
+    const affiliateUser = await User.findById(link.affiliateUser).select("status role");
+    const isAffiliate =
+      affiliateUser && (affiliateUser.role === "affiliate" || affiliateUser.isAffiliateEnabled === true);
+    if (!isAffiliate || affiliateUser.status !== "ACTIVE") {
+      throw new Error("This affiliate account is no longer active.");
+    }
 
     // Fraud Guard: Prevent self-referrals
     if (buyerUserId && link.affiliateUser.toString() === buyerUserId.toString()) {
       return { FraudGuardFlagged: true, reason: "Self-referral blocked" };
     }
 
-    link.clickCount += 1;
-    link.lastClickedAt = new Date();
-    await link.save();
+    // Duplicate guard: a buyer (or IP) may only register one click per link
+    // per 24h window. Existing AffiliateClick docs are upserted keyed on
+    // link + ip + user so stats stay honest.
+    const window = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const duplicate = await AffiliateClick.exists({
+      link: link._id,
+      ...(buyerUserId ? { buyerUser: buyerUserId } : { visitorIp: visitorIp || "" }),
+      createdAt: { $gte: window },
+    });
+    if (duplicate) {
+      return { success: true, affiliateCode: link.affiliateCode, affiliateUser: link.affiliateUser, deduped: true };
+    }
+
+    await AffiliateLink.updateOne(
+      { _id: link._id },
+      { $inc: { clickCount: 1 }, $set: { lastClickedAt: new Date() } }
+    );
 
     // Timestamped copy so ?range=7d stats can be answered; the lifetime
     // counter on the link alone cannot be bucketed by day.
@@ -85,6 +110,67 @@ class AffiliateService {
   }
 
   /**
+   * Server-side attribution for an order being placed.
+   *
+   * Validates the referral code against an active link from an ACTIVE
+   * affiliate, blocks self-referrals, derives the product scope (storewide or
+   * link-targeted) and the effective commission rate, and returns everything
+   * the order needs to record conversion. Never trusts the client for money.
+   */
+  async resolveAttribution({ code, buyerUserId, productIds = [], ip = "" }) {
+    const clean = String(code || "").trim();
+    if (!clean || clean.length > 120) {
+      return { affiliateUser: null, link: null, productScope: [], rate: null };
+    }
+
+    const link = await AffiliateLink.findOne({ affiliateCode: clean }).lean();
+    if (!link || link.isActive === false) {
+      return { affiliateUser: null, link: null, productScope: [], rate: null };
+    }
+    if (!link.affiliateUser) {
+      return { affiliateUser: null, link: null, productScope: [], rate: null };
+    }
+
+    const affiliate = await User.findById(link.affiliateUser).select("status role isAffiliateEnabled");
+    const isAffiliate =
+      affiliate && (affiliate.role === "affiliate" || affiliate.isAffiliateEnabled === true);
+    if (!isAffiliate || affiliate.status !== "ACTIVE") {
+      return { affiliateUser: null, link: null, productScope: [], rate: null };
+    }
+
+    // Self-referral: the buyer is the affiliate themselves.
+    if (buyerUserId && String(link.affiliateUser) === String(buyerUserId)) {
+      return { affiliateUser: null, link: null, productScope: [], rate: null, selfReferral: true };
+    }
+
+    let productScope = [];
+    let rate = null;
+    if (link.campaign) {
+      const campaign = await AffiliateCampaign.findById(link.campaign).select("status commissionRate startsAt endsAt").lean();
+      if (campaign) {
+        const now = Date.now();
+        const campaignActive =
+          campaign.status === "ACTIVE" &&
+          (!campaign.startsAt || new Date(campaign.startsAt).getTime() <= now) &&
+          (!campaign.endsAt || new Date(campaign.endsAt).getTime() >= now);
+        if (campaignActive && campaign.commissionRate) rate = campaign.commissionRate;
+      }
+    }
+
+    if (link.targetProduct) {
+      productScope = [link.targetProduct];
+    }
+
+    return {
+      affiliateUser: link.affiliateUser,
+      linkId: link._id,
+      code: clean,
+      productScope,
+      rate: rate && rate > 0 ? rate : null,
+    };
+  }
+
+  /**
    * Credit Pending Commission upon successful purchase
    */
   async creditPendingCommission({ affiliateUser, amount, orderId }) {
@@ -101,24 +187,53 @@ class AffiliateService {
 
   /**
    * Request Wallet Payout (Server-side 10,000 RWF Minimum Rule Enforcement)
+   *
+   * Guarded with atomic $inc so concurrent requests cannot double-spend, and a
+   * fresh request is refused while an earlier one is still open.
    */
   async requestPayout({ userId, amount, paymentMethod, accountDetails }) {
-    if (amount < MINIMUM_PAYOUT_RWF) {
-      throw new Error(`Minimum withdrawal threshold is RWF ${MINIMUM_PAYOUT_RWF.toLocaleString()}. Requested: RWF ${amount.toLocaleString()}`);
+    const requested = Number(amount);
+    if (!Number.isFinite(requested) || requested <= 0) {
+      throw new Error("A valid withdrawal amount is required.");
+    }
+    if (requested < MINIMUM_PAYOUT_RWF) {
+      throw new Error(`Minimum withdrawal threshold is RWF ${MINIMUM_PAYOUT_RWF.toLocaleString()}. Requested: RWF ${requested.toLocaleString()}`);
+    }
+
+    const allowedMethods = ["MTN_MOMO", "AIRTEL_MONEY", "BANK_TRANSFER"];
+    if (!allowedMethods.includes(paymentMethod)) {
+      throw new Error("paymentMethod must be one of MTN_MOMO, AIRTEL_MONEY or BANK_TRANSFER.");
     }
 
     const session = await mongoose.startSession();
     session.startTransaction();
 
     try {
+      const open = await AffiliatePayout.exists({
+        affiliateUser: userId,
+        status: { $in: ["PENDING", "PROCESSING"] },
+      }).session(session);
+      if (open) throw new Error("A payout request is already under review.");
+
+      // Only an account at or above the minimum AND free of unpaid clawbacks
+      // may withdraw.
       const wallet = await AffiliateWallet.findOne({ affiliateUser: userId }).session(session);
-      if (!wallet || wallet.availableBalance < amount) {
+      if (!wallet || wallet.availableBalance < requested) {
         throw new Error("Insufficient available balance for withdrawal.");
       }
+      if ((wallet.clawbackBalance || 0) > 0) {
+        throw new Error("Please clear your outstanding balance (clawback) before requesting a payout.");
+      }
 
-      // Lock available balance into pending payout status
-      wallet.availableBalance -= amount;
-      await wallet.save({ session });
+      // Atomic lock: available -> lockedInPayouts.
+      const locked = await AffiliateWallet.findOneAndUpdate(
+        { affiliateUser: userId, availableBalance: { $gte: requested } },
+        { $inc: { availableBalance: -requested, lockedInPayouts: requested } },
+        { session }
+      );
+      if (!locked) {
+        throw new Error("Insufficient available balance for withdrawal.");
+      }
 
       const payoutNumber = `PAY-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`;
       const payout = await AffiliatePayout.create(
@@ -126,7 +241,7 @@ class AffiliateService {
           {
             payoutNumber,
             affiliateUser: userId,
-            amount,
+            amount: requested,
             paymentMethod,
             accountDetails,
             status: "PENDING",
@@ -148,6 +263,10 @@ class AffiliateService {
 
   /**
    * Super Admin Process & Approve Payout
+   *
+   * Move through a strict state machine (PENDING -> APPROVED/PROCESSING ->
+   * COMPLETED | REJECTED). COMPLETED requires a transaction reference and marks
+   * the payout processed; REJECTED puts the locked funds back into the wallet.
    */
   async processAdminPayout({ payoutId, adminId, status, transactionReference, rejectionReason }) {
     const session = await mongoose.startSession();
@@ -157,26 +276,59 @@ class AffiliateService {
       const payout = await AffiliatePayout.findById(payoutId).session(session);
       if (!payout) throw new Error("Payout request not found.");
 
-      if (payout.status !== "PENDING" && payout.status !== "PROCESSING") {
-        throw new Error(`Cannot update payout in state: ${payout.status}`);
+      const allowedFrom = status === "APPROVED" || status === "PROCESSING"
+        ? ["PENDING"]
+        : status === "COMPLETED"
+        ? ["APPROVED", "PROCESSING"]
+        : status === "REJECTED"
+        ? ["PENDING", "APPROVED", "PROCESSING"]
+        : [];
+      if (!allowedFrom.includes(payout.status)) {
+        throw new Error(`Cannot move payout from ${payout.status} to ${status}.`);
       }
 
       const wallet = await AffiliateWallet.findOne({ affiliateUser: payout.affiliateUser }).session(session);
+      if (!wallet) throw new Error("Affiliate wallet not found.");
 
       if (status === "COMPLETED") {
+        if (!transactionReference || !String(transactionReference).trim()) {
+          throw new Error("A transaction reference is required when completing a payout.");
+        }
         payout.status = "COMPLETED";
-        payout.transactionReference = transactionReference;
+        payout.transactionReference = String(transactionReference).trim();
         payout.approvedBy = adminId;
-        wallet.totalWithdrawn += payout.amount;
+        payout.processedAt = new Date();
+        await AffiliateWallet.updateOne(
+          { _id: wallet._id },
+          {
+            $inc: {
+              totalWithdrawn: payout.amount,
+              lockedInPayouts: -payout.amount,
+            },
+          },
+          { session }
+        );
       } else if (status === "REJECTED") {
         payout.status = "REJECTED";
         payout.rejectionReason = rejectionReason || "Admin rejected payout request";
-        // Revert funds back to available balance
-        wallet.availableBalance += payout.amount;
+        payout.processedAt = new Date();
+        // Revert locked funds back to available balance.
+        await AffiliateWallet.updateOne(
+          { _id: wallet._id },
+          {
+            $inc: {
+              availableBalance: payout.amount,
+              lockedInPayouts: -payout.amount,
+            },
+          },
+          { session }
+        );
+      } else {
+        payout.status = status;
+        payout.approvedBy = adminId;
       }
 
       await payout.save({ session });
-      await wallet.save({ session });
 
       await session.commitTransaction();
       session.endSession();
@@ -267,7 +419,11 @@ class AffiliateService {
 
     return users.map((u) => {
       const w = walletByUser[String(u._id)];
-      const earned = w ? (w.availableBalance || 0) + (w.pendingBalance || 0) + (w.totalWithdrawn || 0) : 0;
+      const earned = w && Number.isFinite(w.totalEarned)
+        ? w.totalEarned
+        : w
+        ? (w.availableBalance || 0) + (w.pendingBalance || 0) + (w.totalWithdrawn || 0)
+        : 0;
       const agg = byUser[String(u._id)] || { clicks: 0, conversions: 0 };
       return {
         id: u._id,
@@ -403,11 +559,18 @@ class AffiliateService {
     const available = wallet ? wallet.availableBalance || 0 : 0;
     const pending = wallet ? wallet.pendingBalance || 0 : 0;
     const withdrawn = wallet ? wallet.totalWithdrawn || 0 : 0;
+    // totalEarned is journaled on release; fall back to a derived value when a
+    // legacy wallet lacks the field.
+    const earned = wallet && Number.isFinite(wallet.totalEarned)
+      ? wallet.totalEarned
+      : available + pending + withdrawn;
     return {
       availableBalance: available,
       pendingBalance: pending,
       totalWithdrawn: withdrawn,
-      totalEarned: available + pending + withdrawn,
+      lockedInPayouts: wallet ? wallet.lockedInPayouts || 0 : 0,
+      clawbackBalance: wallet ? wallet.clawbackBalance || 0 : 0,
+      totalEarned: earned,
       currency: CURRENCY,
       minimumPayout: MINIMUM_PAYOUT_RWF,
       lastPayoutAt: lastPayout ? lastPayout.updatedAt : null,

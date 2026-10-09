@@ -42,6 +42,7 @@ const affiliatePayoutSchema = new mongoose.Schema(
     },
     transactionReference: { type: String },
     rejectionReason: { type: String },
+    processedAt: { type: Date, default: null },
   },
   { timestamps: true }
 );

@@ -38,24 +38,13 @@ app.use(helmet({
     directives: { upgradeInsecureRequests: isProduction ? [] : null },
   },
   strictTransportSecurity: isProduction,
-  // The React app is served from its own origin (Vite on :5173 in dev, its own
-  // host in production) while product images live on this API. helmet's default
-  // `same-origin` Cross-Origin-Resource-Policy made the browser throw away
-  // every cross-origin <img src="…/uploads/…"> even though the server returned
-  // 200 OK, so the UI always fell back to the placeholder image.
-  crossOriginResourcePolicy: { policy: "cross-origin" },
-  crossOriginEmbedderPolicy: false,
 }));
 app.use(cors({
   origin: "*",
   credentials: true,
 }));
 // Keep the raw body so webhook signatures (Paypack, Airtel) can be verified.
-// The JSON limit is raised well above Express' 100kb default: product payloads
-// (and any client that inlines image data) used to die with a 413 before the
-// request ever reached a controller.
 app.use(express.json({
-  limit: "10mb",
   verify: (req, res, buf) => {
     req.rawBody = buf;
   },

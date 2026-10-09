@@ -12,6 +12,12 @@ const allowedTypes = [
   "SUBSCRIPTION",
   "ADMIN",
   "SYSTEM",
+  "COMMISSION",
+  "CAMPAIGN",
+  "VERIFICATION",
+  "AFFILIATE",
+  "SUPPLIER_ORDER",
+  "SUPPLY_REQUEST",
 ];
 
 function mapNotification(n) {

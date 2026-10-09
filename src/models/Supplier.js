@@ -27,7 +27,12 @@ const supplierSchema = new mongoose.Schema(
       enum: ["UNVERIFIED", "PENDING", "VERIFIED", "REJECTED"],
       default: "UNVERIFIED",
     },
+    // Stored by admins when rejecting a verification submission.
+    verificationNote: { type: String, default: "" },
+    verifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    verifiedAt: { type: Date, default: null },
     ratingAvg: { type: Number, default: 0, min: 0, max: 5 },
+    reviewCount: { type: Number, default: 0, min: 0 },
     status: {
       type: String,
       enum: ["ACTIVE", "SUSPENDED", "BLOCKED", "UNDER_REVIEW"],
@@ -47,8 +52,8 @@ supplierSchema.pre("save", async function () {
       this.publicId = `MVEC-SUP-${crypto.randomBytes(4).toString("hex").toUpperCase()}`;
     }
 
-    if (this.isModified("businessName") || !this.slug) {
-      const base = slugify(this.businessName);
+    if (!this.slug) {
+      const base = slugify(this.businessName || "supplier");
       let candidate = `${base}-${crypto.randomBytes(3).toString("hex")}`;
       let attempts = 0;
       while (attempts < 5) {

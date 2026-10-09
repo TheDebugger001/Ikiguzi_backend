@@ -31,15 +31,19 @@ exports.generateLink = async (req, res) => {
 
 exports.trackClick = async (req, res) => {
   try {
-    const { code } = req.params;
-    const visitorIp = req.ip;
-    const buyerUserId = req.user ? req.user.id : null;
+    const code = req.params.code || req.body.code;
+    const visitorIp = req.ip || req.headers["x-forwarded-for"] || req.socket?.remoteAddress;
+    const buyerUserId = req.user ? req.user.id || String(req.user._id) : null;
 
     const result = await affiliateService.trackClick(code, visitorIp, buyerUserId);
+    if (result.FraudGuardFlagged) {
+      return res.status(202).json({ success: false, fraudGuard: true, reason: result.reason });
+    }
 
     return res.status(200).json({
       success: true,
       data: result,
+      affiliateCode: result.affiliateCode,
     });
   } catch (error) {
     return res.status(400).json({ success: false, message: error.message });
@@ -216,7 +220,7 @@ exports.getStats = async (req, res) => {
 
 exports.getWallet = async (req, res) => {
   try {
-    const wallet = await affiliateService.getWallet(req.user.id);
+    const wallet = await affiliateService.getWalletSummary(req.user.id);
     return res.status(200).json({ success: true, wallet });
   } catch (error) {
     return fail(res, error);

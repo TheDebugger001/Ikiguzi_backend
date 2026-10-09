@@ -3,6 +3,7 @@ const Supplier = require("../models/Supplier");
 const SupplierTeamMember = require("../models/SupplierTeamMember");
 const Product = require("../models/Product");
 const WholesaleProduct = require("../models/WholesaleProduct");
+const User = require("../models/User");
 
 // Resolve the signed-in supplier's profile document (used by wholesale CRUD).
 async function resolveMySupplier(userId) {
@@ -284,6 +285,18 @@ exports.adminUpdateSupplierStatus = async (req, res) => {
 
     supplier.status = status;
     await supplier.save();
+
+    // Keep the owner's User account in sync so token-gated middleware
+    // (protect) rejects BLOCKED / SUSPENDED suppliers at the gate.
+    if (supplier.user) {
+      const userStatusMap = {
+        ACTIVE: "ACTIVE",
+        SUSPENDED: "SUSPEND",
+        BLOCKED: "BLOCK",
+        UNDER_REVIEW: "INVESTIGATE",
+      };
+      await User.findByIdAndUpdate(supplier.user, { status: userStatusMap[status] || "ACTIVE" });
+    }
 
     return res.status(200).json({ message: `Supplier status set to ${status}`, supplier });
   } catch (error) {

@@ -263,6 +263,25 @@ exports.handlePaypackWebhook = async (req, res) => {
       });
     }
 
+    // Wholesale (B2B) payments flow through the same gateway but settle into
+    // the wholesale escrow flow (no per-item retail settlements).
+    if (payment.kind === "WHOLESALE") {
+      const result = await paymentService.processWholesalePaymentWebhook({
+        provider: "PAYPACK",
+        externalTransactionId: data.ref,
+        paymentId: payment._id,
+        amount: Number(data.amount),
+        payload: req.body,
+        gatewayFee: Number(data.fee) || 0,
+      });
+
+      return res.status(200).json({
+        success: true,
+        message: "Paypack wholesale webhook processed successfully.",
+        result,
+      });
+    }
+
     const result = await paymentService.processPaymentWebhook({
       provider: "PAYPACK",
       externalTransactionId: data.ref,

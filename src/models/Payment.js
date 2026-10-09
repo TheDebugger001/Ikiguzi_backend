@@ -8,6 +8,14 @@ const paymentSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
+    // Distinguishes retail (Order) payments from wholesale (WholesaleOrder)
+    // payments so webhooks can route the callback to the correct service.
+    kind: {
+      type: String,
+      enum: ["RETAIL", "WHOLESALE"],
+      default: "RETAIL",
+      index: true,
+    },
     transactionReference: {
       type: String,
       required: true,

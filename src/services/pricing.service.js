@@ -24,7 +24,7 @@ async function getApplicableCommissionRule({ productId, vendorId, categoryId }) 
   return activeRules[0];
 }
 
-exports.createItemPricingSnapshot = async ({ orderId, item, session, hasAffiliate = false, gatewayFee = 0 }) => {
+exports.createItemPricingSnapshot = async ({ orderId, item, session, hasAffiliate = false, gatewayFee = 0, affiliateRatePercent = null }) => {
   const { product, vendor, category, price, quantity } = item;
   const unitPrice = price;
   const grossTotal = unitPrice * quantity;
@@ -44,7 +44,7 @@ exports.createItemPricingSnapshot = async ({ orderId, item, session, hasAffiliat
 
   commissionAmount = Math.min(commissionAmount, grossTotal);
 
-  const split = computeRevenueSplit({ grossTotal, hasAffiliate, gatewayFee });
+  const split = computeRevenueSplit({ grossTotal, hasAffiliate, gatewayFee, affiliateRatePercent });
 
   const snapshot = await PricingSnapshot.create(
     [

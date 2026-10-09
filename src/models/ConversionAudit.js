@@ -16,6 +16,8 @@ const conversionAuditSchema = new mongoose.Schema(
       index: true,
     },
     convertedAt: { type: Date, default: Date.now },
+    approvedAt: { type: Date, default: null },
+    paidAt: { type: Date, default: null },
   },
   { timestamps: true }
 );

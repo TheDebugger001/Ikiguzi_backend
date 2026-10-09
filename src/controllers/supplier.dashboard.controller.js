@@ -759,9 +759,9 @@ exports.updateTeamMember = async (req, res) => {
     const supplier = await findSupplier(req.user._id);
     const member = await SupplierTeamMember.findOne({ _id: req.params.memberId, supplier: supplier._id });
     if (!member) return res.status(404).json({ message: "Team member not found." });
-    if (member.user) await User.findByIdAndUpdate(member.user, { status: "SUSPEND" });
     const allowedRoles = ["OPERATIONS", "WAREHOUSE", "FULFILMENT", "FINANCE", "VIEWER"];
     const allowedStatuses = ["ACTIVE", "INVITED", "SUSPENDED"];
+    let userFieldsToSync = {};
     if (req.body.role !== undefined) {
       const role = String(req.body.role).toUpperCase();
       if (!allowedRoles.includes(role)) return res.status(400).json({ message: "Choose a supported staff role." });
@@ -773,9 +773,18 @@ exports.updateTeamMember = async (req, res) => {
       member.status = status;
     }
     for (const field of ["fullName", "phone", "email", "note"]) {
-      if (req.body[field] !== undefined) member[field] = String(req.body[field]).trim();
+      if (req.body[field] !== undefined) {
+        member[field] = String(req.body[field]).trim();
+        if (field === "fullName") userFieldsToSync.Fullname = member[field];
+        if (field === "phone") userFieldsToSync.phone = member[field];
+        if (field === "email") userFieldsToSync.email = member[field];
+      }
     }
     await member.save();
+    // Keep the linked User account in sync for profile changes. Only the
+    // standard status values may be written to User.status — SUSPEND/BLOCK are
+    // reserved for platform admins and must never be set by a supplier.
+    if (member.user) await User.findByIdAndUpdate(member.user, userFieldsToSync);
     return res.json({ member });
   } catch (error) {
     return sendError(res, error);
