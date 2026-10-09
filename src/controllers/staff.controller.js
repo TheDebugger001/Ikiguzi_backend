@@ -166,6 +166,9 @@ exports.addStaffMember = async (req, res) => {
   let createdStaff = null;
 
   try {
+    // The team is always managed on behalf of the store owner (set by
+    // checkStaffPermission), never on behalf of the staff member calling us.
+    const ownerId = req.ownerId || req.vendorId || req.user.id;
     const name = String(req.body.name || req.body.Fullname || "").trim();
 
     const normalizedEmail =
@@ -225,7 +228,7 @@ exports.addStaffMember = async (req, res) => {
     }
 
     const existingStaff = await Staff.findOne({
-      vendorOwner: req.user.id,
+      vendorOwner: ownerId,
       ...(userToInvite
         ? {
             $or: [
@@ -248,7 +251,7 @@ exports.addStaffMember = async (req, res) => {
       });
     }
 
-    const store = await storeForOwner(req.user.id);
+    const store = await storeForOwner(ownerId);
 
     if (!store) {
       return res.status(404).json({
@@ -300,7 +303,7 @@ exports.addStaffMember = async (req, res) => {
       });
 
       createdStaff = await Staff.create({
-        vendorOwner: req.user.id,
+        vendorOwner: ownerId,
         user: createdUser._id,
         email: normalizedEmail,
         role,
@@ -330,7 +333,7 @@ exports.addStaffMember = async (req, res) => {
       vendorStaffInvitation.createInvitationToken();
 
     createdStaff = await Staff.create({
-      vendorOwner: req.user.id,
+      vendorOwner: ownerId,
 
       ...(userToInvite
         ? {
@@ -490,7 +493,8 @@ exports.addStaffMember = async (req, res) => {
 // @access  Private (Vendor Owner Only)
 exports.getStoreStaff = async (req, res) => {
   try {
-    const store = await storeForOwner(req.user.id);
+    const ownerId = req.ownerId || req.vendorId || req.user.id;
+    const store = await storeForOwner(ownerId);
 
     if (!store) {
       return res.status(404).json({
@@ -500,12 +504,12 @@ exports.getStoreStaff = async (req, res) => {
 
     const [staffList, owner] = await Promise.all([
       Staff.find({
-        vendorOwner: req.user.id,
+        vendorOwner: ownerId,
       })
         .populate("user", "Fullname email phone")
         .sort({ createdAt: 1 }),
 
-      User.findById(req.user.id).select("Fullname email phone createdAt"),
+      User.findById(ownerId).select("Fullname email phone createdAt"),
     ]);
 
     const ownerRow = {
@@ -519,7 +523,7 @@ exports.getStoreStaff = async (req, res) => {
       status: "ACTIVE",
       active: true,
       store_id: store._id,
-      vendor_id: req.user.id,
+      vendor_id: ownerId,
       user_id: owner._id,
       permissions: Object.keys(PERMISSIONS),
       createdAt: owner.createdAt,
@@ -540,6 +544,7 @@ exports.getStoreStaff = async (req, res) => {
 // @access  Private (Vendor Owner Only)
 exports.updateStaffMember = async (req, res) => {
   try {
+    const ownerId = req.ownerId || req.vendorId || req.user.id;
     const isObjectId = mongoose.Types.ObjectId.isValid(req.params.id);
 
     if (!isObjectId) {
@@ -557,7 +562,7 @@ exports.updateStaffMember = async (req, res) => {
           user: req.params.id,
         },
       ],
-      vendorOwner: req.user.id,
+      vendorOwner: ownerId,
     }).populate("user", "Fullname email phone");
 
     if (!staff) {
@@ -634,6 +639,7 @@ exports.updateStaffMember = async (req, res) => {
 // @access  Private (Vendor Owner Only)
 exports.removeStaffMember = async (req, res) => {
   try {
+    const ownerId = req.ownerId || req.vendorId || req.user.id;
     const isObjectId = mongoose.Types.ObjectId.isValid(req.params.id);
 
     if (!isObjectId) {
@@ -651,7 +657,7 @@ exports.removeStaffMember = async (req, res) => {
           user: req.params.id,
         },
       ],
-      vendorOwner: req.user.id,
+      vendorOwner: ownerId,
     });
 
     if (!staff) {

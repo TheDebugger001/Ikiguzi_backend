@@ -226,15 +226,23 @@ exports.deleteCategory = async (req, res) => {
       return res.status(404).json({ message: "Category not found" });
     }
 
-    // Block delete if it still has active subcategories
-    const childCount = await Category.countDocuments({ parentId: id, active: true });
-    if (childCount > 0) {
+    // Check for active subcategories
+    const subcatCount = await Category.countDocuments({ parentId: id, active: true });
+    if (subcatCount > 0) {
       return res.status(409).json({
-        message: "Cannot delete a category that still has active subcategories",
+        message: "Cannot delete category: Please remove or reassign its subcategories first.",
       });
     }
 
-    // Soft-delete: keeps history/products referencing it intact
+    // Check for attached products
+    const productCount = await Product.countDocuments({ category: id });
+    if (productCount > 0) {
+      return res.status(409).json({
+        message: "Cannot delete category: Please reassign or delete all products in this category first.",
+      });
+    }
+
+    // Safe deletion / soft delete
     category.active = false;
     await category.save();
 

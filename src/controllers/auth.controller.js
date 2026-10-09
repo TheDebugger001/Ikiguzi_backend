@@ -107,6 +107,18 @@ const buildAuthenticatedUserResponse = async (user, staffDetails = null) => {
   if (user.role === "vendor" || user.role === "supplier") {
     const Profile = user.role === "vendor" ? Vendor : Supplier;
     let profile = await Profile.findOne({ user: user._id }).lean();
+
+    // Team members inherit the owner's profile: a vendor staff account has no
+    // Vendor document of its own, so without this the member would be reported
+    // as "not onboarded" and forced through onboarding that already happened.
+    if (!profile && user.role === "vendor") {
+      const staffMembership = await Staff.findOne({
+        $or: [{ user: user._id }, { user_id: user._id }],
+        status: "ACTIVE",
+      }).lean();
+      if (staffMembership) profile = await Vendor.findOne({ user: staffMembership.vendorOwner }).lean();
+    }
+
     if (!profile && user.role === "supplier") {
       const membership = await SupplierTeamMember.findOne({ user: user._id, status: "ACTIVE" }).lean();
       if (membership) profile = await Supplier.findById(membership.supplier).lean();
@@ -127,14 +139,27 @@ const buildAuthenticatedUserResponse = async (user, staffDetails = null) => {
     response.verificationStatus = "VERIFIED";
   }
   const membership = await vendorStaffInvitation.getActiveMembership(user._id);
-  if (!membership) return response;
-  return {
-    ...response,
-    vendorStaff: true,
-    vendorOwnerId: membership.vendorOwner.toString(),
-    staffRole: membership.role,
-    vendorPermissions: membership.permissions,
-  };
+  if (membership) {
+    return {
+      ...response,
+      vendorStaff: true,
+      vendorOwnerId: membership.vendorOwner.toString(),
+      staffRole: membership.role,
+      vendorPermissions: membership.permissions,
+    };
+  }
+
+  // Supplier team members have no Vendor/Supplier profile of their own either;
+  // expose their team role so the client can hide the sections that role is
+  // not allowed to use.
+  if (user.role === "supplier") {
+    const teamMembership = await SupplierTeamMember.findOne({ user: user._id, status: "ACTIVE" }).lean();
+    if (teamMembership) {
+      return { ...response, isSupplierStaff: true, supplierTeamRole: teamMembership.role };
+    }
+  }
+
+  return response;
 };
 
 exports.getAuthenticatedUserResponse = buildAuthenticatedUserResponse;

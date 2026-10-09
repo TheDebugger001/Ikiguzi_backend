@@ -81,7 +81,14 @@ class AffiliateService {
       console.error("Failed to record affiliate click:", err.message);
     }
 
-    return { success: true, affiliateCode: link.affiliateCode, affiliateUser: link.affiliateUser };
+    return {
+      success: true,
+      affiliateCode: link.affiliateCode,
+      affiliateUser: link.affiliateUser,
+      targetProduct: link.targetProduct
+        ? { id: link.targetProduct._id, slug: link.targetProduct.slug, name: link.targetProduct.name }
+        : null,
+    };
   }
 
   /**

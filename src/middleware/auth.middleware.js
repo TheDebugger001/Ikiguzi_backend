@@ -1,5 +1,6 @@
 const jwt = require("jsonwebtoken");
 const User = require("../models/User"); // Adjust path to your User model
+const Staff = require("../models/Staff");
 const Vendor = require("../models/Vendor");
 const Supplier = require("../models/Supplier");
 const SupplierTeamMember = require("../models/SupplierTeamMember");
@@ -57,6 +58,18 @@ exports.requireOnboarded = async (req, res, next) => {
   if (!["vendor", "supplier"].includes(req.user.role) || (req.user.role === "super_admin" && req.user.isSellerEnabled)) return next();
   const Profile = req.user.role === "vendor" ? Vendor : Supplier;
   let profile = await Profile.findOne({ user: req.user._id }).lean();
+
+  // Vendor team/staff accounts never onboard themselves. They inherit the
+  // onboarding state of the owner who invited them, so a staff member of an
+  // already onboarded vendor is onboarded too.
+  if (!profile && req.user.role === "vendor") {
+    const membership = await Staff.findOne({
+      $or: [{ user: req.user._id }, { user_id: req.user._id }],
+      status: "ACTIVE",
+    }).lean();
+    if (membership) profile = await Vendor.findOne({ user: membership.vendorOwner }).lean();
+  }
+
   if (!profile && req.user.role === "supplier") {
     const membership = await SupplierTeamMember.findOne({ user: req.user._id, status: "ACTIVE" }).lean();
     if (membership) profile = await Supplier.findById(membership.supplier).lean();

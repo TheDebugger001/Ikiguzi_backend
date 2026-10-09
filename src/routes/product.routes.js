@@ -8,6 +8,7 @@ const {
   deleteProduct,
   getProductById,
   getProductBySlug,
+  getRecommendations,
 } = require("../controllers/product.controller");
 const { checkStaffPermission } = require("../middleware/staff.middleware");
 
@@ -16,6 +17,9 @@ const { authorize, requireOnboarded } = require("../middleware/auth.middleware")
 
 // Public route for Buyers & Admin to browse products
 router.get("/", getAllProducts);
+
+// Recommendations route - products sorted by rating and recency
+router.get("/recommendations", getRecommendations);
 
 // Placed these above router.use(protect);
 router.get("/slug/:slug", getProductBySlug);

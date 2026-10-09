@@ -301,6 +301,25 @@ exports.getProductBySlug = async (req, res) => {
     return res.status(200).json({ product });
   } catch (error) {
     console.error("Error fetching product by slug:", error);
+    return res.status(500).json({ message: "Invalid Product ID or server error" });
+  }
+};
+
+// @desc    Get recommended products (sorted by rating and recency)
+// @route   GET /api/products/recommendations
+// @access  Public
+exports.getRecommendations = async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit, 10) || 8;
+
+    const featuredProducts = await Product.find({ status: "ACTIVE" })
+      .sort({ averageRating: -1, createdAt: -1 })
+      .limit(limit)
+      .populate("vendor", "companyName logoUrl")
+      .populate("category", "name slug");
+
+    return res.status(200).json({ recommendations: featuredProducts });
+  } catch (error) {
     return res.status(500).json({ message: error.message });
   }
 };
