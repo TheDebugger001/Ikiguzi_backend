@@ -208,6 +208,10 @@ exports.getVendorOrders = async (req, res) => {
         _id: order._id,
         orderNumber: order.orderNumber,
         user: order.user,
+        source: order.source || "ONLINE",
+        customer: order.customer,
+        paidOffline: order.paidOffline,
+        paymentMethod: order.paymentMethod,
         shippingAddress: order.shippingAddress,
         paymentStatus: order.paymentStatus,
         orderStatus: order.orderStatus,
@@ -217,6 +221,11 @@ exports.getVendorOrders = async (req, res) => {
           (sum, item) => sum + item.price * item.quantity,
           0,
         ),
+        // Delivery fees for this seller's parcels (paid to the seller, no commission).
+        vendorShippingFee: (order.shippingBreakdown || [])
+          .filter((s) => s.vendor && vendorIds.includes(s.vendor.toString()))
+          .reduce((sum, s) => sum + (s.fee || 0), 0),
+        shippingMethod: order.shippingMethod,
       };
     });
 

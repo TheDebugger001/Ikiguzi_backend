@@ -8,9 +8,15 @@ const socketService = require("../services/socket.service");
 
 const DUPLICATE_PUSH_WINDOW_MS = 2 * 60 * 1000;
 
-async function initiateMobileMoneyPayment({ orderId, phoneNumber, gatewayService, explicitProvider = null, reqUserId }) {
-  if (!mongoose.isValidObjectId(orderId)) {
+// Two modes: pay an order (orderId), or a standalone amount with no order.
+async function initiateMobileMoneyPayment({ orderId, amount, phoneNumber, gatewayService, explicitProvider = null, reqUserId }) {
+  const standalone = !orderId && amount !== undefined && amount !== null;
+  if (!standalone && !mongoose.isValidObjectId(orderId)) {
     throw Object.assign(new Error("A valid order ID is required."), { statusCode: 400 });
+  }
+  const standaloneAmount = Number(amount);
+  if (standalone && (!Number.isInteger(standaloneAmount) || standaloneAmount <= 0)) {
+    throw Object.assign(new Error("Amount must be a positive whole number of RWF."), { statusCode: 400 });
   }
 
   // Without gateway credentials the gateway runs in simulation mode. That is
@@ -35,55 +41,63 @@ async function initiateMobileMoneyPayment({ orderId, phoneNumber, gatewayService
   const provider = explicitProvider || phoneInfo.provider;
   const paymentMethod = provider === "MTN" ? "MOMO" : "AIRTEL";
 
-  const order = await Order.findById(orderId);
-  if (!order || order.user.toString() !== reqUserId.toString()) {
-    throw Object.assign(new Error("Order not found."), { statusCode: 404 });
-  }
-  if (order.paymentStatus === "PAID") {
-    throw Object.assign(new Error("Order is already paid."), { statusCode: 400 });
-  }
-  if (order.orderStatus !== "PENDING") {
-    throw Object.assign(new Error("This order can no longer be paid. Please place a new order."), { statusCode: 400 });
+  let order = null;
+  if (!standalone) {
+    order = await Order.findById(orderId);
+    if (!order || !order.user || order.user.toString() !== reqUserId.toString()) {
+      throw Object.assign(new Error("Order not found."), { statusCode: 404 });
+    }
+    if (order.paymentStatus === "PAID") {
+      throw Object.assign(new Error("Order is already paid."), { statusCode: 400 });
+    }
+    if (order.orderStatus !== "PENDING") {
+      throw Object.assign(new Error("This order can no longer be paid. Please place a new order."), { statusCode: 400 });
+    }
+
+    // One USSD prompt at a time: a double click must not charge the buyer twice.
+    const recentPending = await Payment.findOne({
+      parentOrder: order._id,
+      status: "PENDING",
+      createdAt: { $gte: new Date(Date.now() - DUPLICATE_PUSH_WINDOW_MS) },
+    }).sort({ createdAt: -1 });
+    if (recentPending) {
+      throw Object.assign(
+        new Error("A payment prompt was already sent to your phone. Approve it, or wait two minutes before trying again."),
+        { statusCode: 409, paymentId: recentPending._id }
+      );
+    }
   }
 
-  // One USSD prompt at a time: a double click must not charge the buyer twice.
-  const recentPending = await Payment.findOne({
-    parentOrder: order._id,
-    status: "PENDING",
-    createdAt: { $gte: new Date(Date.now() - DUPLICATE_PUSH_WINDOW_MS) },
-  }).sort({ createdAt: -1 });
-  if (recentPending) {
-    throw Object.assign(
-      new Error("A payment prompt was already sent to your phone. Approve it, or wait two minutes before trying again."),
-      { statusCode: 409, paymentId: recentPending._id }
-    );
-  }
-
-  const transactionRef = `ORD-${order._id}-${Date.now()}`;
+  const chargeAmount = standalone ? standaloneAmount : order.totalAmount;
+  const transactionRef = standalone
+    ? `PAY-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`
+    : `ORD-${order._id}-${Date.now()}`;
 
   // 1. Create a pending Payment record BEFORE pushing so the webhook can
   //    reconcile the callback against a persisted transaction.
   const payment = await Payment.create({
-    parentOrder: order._id,
+    ...(standalone ? { user: reqUserId } : { parentOrder: order._id }),
     transactionReference: transactionRef,
     method: paymentMethod,
     phoneNumber: phoneInfo.formattedNumber,
     provider,
-    amount: order.totalAmount,
+    amount: chargeAmount,
     currency: "RWF",
     status: "PENDING",
     gateway: gatewayService.name,
     gatewayResponse: { phase: "initiated" },
   });
 
-  order.paymentMethod = paymentMethod;
-  await order.save();
+  if (order) {
+    order.paymentMethod = paymentMethod;
+    await order.save();
+  }
 
   // 2. Trigger the USSD push to the buyer's phone number.
   let gatewayReference = null;
   try {
     const push = await gatewayService.triggerUssdPush({
-      amount: order.totalAmount,
+      amount: chargeAmount,
       currency: "RWF",
       phone: phoneInfo.formattedNumber,
     });
@@ -105,14 +119,23 @@ async function initiateMobileMoneyPayment({ orderId, phoneNumber, gatewayService
   // 4. Development simulation: confirm through the same path a real gateway
   //    callback uses, so escrow, settlements and the delivery code are created.
   if (gatewayService.isSandbox()) {
-    await paymentService.processPaymentWebhook({
-      provider: gatewayService.name,
-      externalTransactionId: gatewayReference || transactionRef,
-      orderId: order._id,
-      paymentId: payment._id,
-      amount: order.totalAmount,
-      payload: { sandbox: true },
-    });
+    if (order) {
+      await paymentService.processPaymentWebhook({
+        provider: gatewayService.name,
+        externalTransactionId: gatewayReference || transactionRef,
+        orderId: order._id,
+        paymentId: payment._id,
+        amount: order.totalAmount,
+        payload: { sandbox: true },
+      });
+    } else {
+      await paymentService.settlePaypackPayment({
+        payment,
+        status: "SUCCESSFUL",
+        amount: chargeAmount,
+        payload: { sandbox: true },
+      });
+    }
   }
 
   const fresh = await Payment.findById(payment._id);
@@ -120,7 +143,7 @@ async function initiateMobileMoneyPayment({ orderId, phoneNumber, gatewayService
     message: `Payment prompt sent to ${phoneInfo.localNumber}. Please approve it on your phone.`,
     paymentRef: transactionRef,
     paymentId: payment._id,
-    amount: order.totalAmount,
+    amount: chargeAmount,
     gatewayReference,
     status: fresh.status,
   };
@@ -136,9 +159,10 @@ const paypackGateway = {
 function mobileMoneyHandler(explicitProvider) {
   return async (req, res) => {
     try {
-      const { orderId, phoneNumber } = req.body;
+      const { orderId, amount, phoneNumber } = req.body;
       const result = await initiateMobileMoneyPayment({
         orderId,
+        amount,
         phoneNumber,
         gatewayService: paypackGateway,
         explicitProvider,
@@ -176,33 +200,30 @@ exports.checkPaymentStatus = async (req, res) => {
     if (!payment) {
       return res.status(404).json({ message: "Payment not found." });
     }
-    const paymentOrder = await Order.findById(payment.parentOrder).select("user");
-    if (!paymentOrder || paymentOrder.user.toString() !== req.user.id) {
+    // Order payments belong to the order's buyer; standalone payments to their payer.
+    const paymentOrder = payment.parentOrder ? await Order.findById(payment.parentOrder).select("user") : null;
+    const ownerId = paymentOrder ? paymentOrder.user : payment.user;
+    const isOwner = ownerId && String(ownerId) === String(req.user.id);
+    if (!isOwner && req.user.role !== "super_admin") {
       return res.status(404).json({ message: "Payment not found." });
     }
 
     if (payment.status === "PENDING" && payment.gateway === "PAYPACK" && payment.gatewayReference) {
       const result = await paypackService.getTransactionStatus(payment.gatewayReference);
 
-      if (result.status === "SUCCESSFUL") {
-        await paymentService.processPaymentWebhook({
-          provider: "PAYPACK",
-          externalTransactionId: payment.gatewayReference,
-          orderId: payment.parentOrder,
-          paymentId: payment._id,
-          amount: result.amount ?? payment.amount,
-          payload: result.raw || {},
-          gatewayFee: result.fee || 0,
-        });
-      } else if (result.status === "FAILED") {
-        payment.status = "FAILED";
-        payment.gatewayResponse = result.raw || payment.gatewayResponse;
-        await payment.save();
-      }
+      await paymentService.settlePaypackPayment({
+        payment,
+        status: result.status,
+        amount: result.amount ?? payment.amount,
+        fee: result.fee || 0,
+        payload: result.raw || {},
+      });
     }
 
     const fresh = await Payment.findById(payment._id);
-    const order = await Order.findById(fresh.parentOrder).select("paymentStatus orderStatus totalAmount");
+    const order = fresh.parentOrder
+      ? await Order.findById(fresh.parentOrder).select("paymentStatus orderStatus totalAmount")
+      : null;
     return res.status(200).json({ payment: fresh, order });
   } catch (error) {
     return res.status(500).json({ message: "Unable to check payment status", error: error.message });

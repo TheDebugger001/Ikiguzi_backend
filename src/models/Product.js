@@ -1,3 +1,9 @@
+// MySQL (DB_DRIVER=mysql): same API, backed by Sequelize. See src/database/mongoose-compat.
+if (require("../database/driver").isMysql) {
+  module.exports = require("../database/mongoose-compat").model("Product");
+  return;
+}
+
 const mongoose = require("mongoose");
 const crypto = require("crypto");
 
@@ -14,6 +20,9 @@ const productSchema = new mongoose.Schema(
     publicId: { type: String, unique: true, index: true },
 
     vendor: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true, index: true },
+    // Store the product is listed under. null = the vendor's primary store
+    // (products created before multi-store support have no store set).
+    store: { type: mongoose.Schema.Types.ObjectId, ref: "Store", default: null, index: true },
     supplier: { type: mongoose.Schema.Types.ObjectId, ref: "Supplier", default: null }, // nullable - not every product is sourced from a supplier
     category: { type: mongoose.Schema.Types.ObjectId, ref: "Category", required: true, index: true },
 
@@ -27,7 +36,10 @@ const productSchema = new mongoose.Schema(
 
     price: { type: Number, required: true, index: true }, // price_rwf
     costPrice: { type: Number, default: null }, // cost_price_rwf - optional, vendor's own margin tracking
-    discountPrice: { type: Number, default: null }, // closest to compare_at_price_rwf
+    discountPrice: { type: Number, default: null }, // final sale price; derived from the two fields below when set
+    // How the seller expressed the discount: a percentage or a fixed RWF amount off `price`.
+    discountType: { type: String, enum: ["PERCENT", "FIXED", null], default: null },
+    discountValue: { type: Number, default: null },
 
     // Flexible discount config: either a fixed RWF amount or a percentage.
     discount: {
@@ -71,6 +83,43 @@ productSchema.index({ "attributes.$**": 1 });
 productSchema.index({ vendor: 1, status: 1 });
 productSchema.index({ category: 1, status: 1 });
 
+// ─── PRE-VALIDATE: derive discountPrice from discountType/discountValue ─────
+// Cart, checkout and storefront all read discountPrice, so it stays the single
+// source of truth for the sale price.
+productSchema.pre("validate", function () {
+  if (this.discountType === "") this.discountType = null;
+  const touched = ["price", "discountType", "discountValue", "discountPrice"].some((f) => this.isModified(f));
+  if (!this.isNew && !touched) return;
+
+  const price = Number(this.price);
+  if (this.discountType) {
+    const value = Number(this.discountValue);
+    if (!Number.isFinite(value) || value <= 0) {
+      throw new Error("Enter a discount greater than 0.");
+    }
+    if (this.discountType === "PERCENT" && value >= 100) {
+      throw new Error("A percentage discount must be less than 100%.");
+    }
+    if (this.discountType === "FIXED" && value >= price) {
+      throw new Error("The discount amount must be less than the selling price.");
+    }
+    const off = this.discountType === "PERCENT" ? (price * value) / 100 : value;
+    this.discountValue = value;
+    this.discountPrice = Math.max(1, Math.round(price - off));
+    return;
+  }
+
+  this.discountValue = null;
+  // Legacy clients send a final discountPrice directly.
+  if (this.discountPrice !== null && this.discountPrice !== undefined && this.discountPrice !== "") {
+    if (!(Number(this.discountPrice) > 0 && Number(this.discountPrice) < price)) {
+      throw new Error("The discounted price must be lower than the selling price.");
+    }
+  } else {
+    this.discountPrice = null;
+  }
+});
+
 // ─── PRE-SAVE: auto publicId + slug + sku + stock/status sync ──────────────
 productSchema.pre("save", async function () {
   const Product = mongoose.model("Product");
@@ -110,5 +159,8 @@ productSchema.pre("save", async function () {
     }
   }
 });
+
+// Expose `id` alongside `_id`; the dashboards address products by `id`.
+productSchema.set("toJSON", { virtuals: true });
 
 module.exports = mongoose.model("Product", productSchema);

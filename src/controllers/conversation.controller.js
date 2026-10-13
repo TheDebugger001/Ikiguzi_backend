@@ -1,6 +1,16 @@
 const Conversation = require("../models/Conversation");
 const Message = require("../models/Message");
 const User = require("../models/User");
+const socketService = require("../services/socket.service");
+
+const PARTICIPANT_FIELDS = "Fullname email companyName logoUrl role";
+
+// Notify every participant's personal socket room.
+function emitToParticipants(conversation, event, data) {
+  for (const p of conversation.participants) {
+    socketService.emitToRoom(`user:${(p._id || p).toString()}`, event, data);
+  }
+}
 
 // @desc    Initialize or retrieve conversation thread
 // @route   POST /api/conversations
@@ -55,9 +65,25 @@ exports.getConversations = async (req, res) => {
       participants: req.user.id,
     })
       .sort({ lastMessageAt: -1 })
-      .populate("participants", "Fullname email companyName logoUrl role");
+      .populate("participants", PARTICIPANT_FIELDS);
 
-    return res.status(200).json({ conversations });
+    const unread = await Message.aggregate([
+      {
+        $match: {
+          conversation: { $in: conversations.map((c) => c._id) },
+          readBy: { $ne: req.user._id },
+        },
+      },
+      { $group: { _id: "$conversation", count: { $sum: 1 } } },
+    ]);
+    const unreadById = new Map(unread.map((u) => [u._id.toString(), u.count]));
+
+    return res.status(200).json({
+      conversations: conversations.map((c) => ({
+        ...c.toJSON(),
+        unreadCount: unreadById.get(c._id.toString()) || 0,
+      })),
+    });
   } catch (error) {
     return res.status(500).json({ message: error.message });
   }
@@ -149,8 +175,66 @@ exports.sendMessage = async (req, res) => {
     await conversation.save();
 
     await message.populate("sender", "Fullname email role");
+    emitToParticipants(conversation, "new_message", { conversationId: id, message });
 
     return res.status(201).json({ message });
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+};
+
+// @desc    Mark every message in a thread as read by the current user
+// @route   PATCH /api/conversations/:id/read
+// @access  Private (participants)
+exports.markConversationRead = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const conversation = await Conversation.findById(id);
+    if (!conversation) {
+      return res.status(404).json({ message: "Conversation thread not found" });
+    }
+    const isParticipant = conversation.participants.some(
+      (p) => p.toString() === req.user.id.toString()
+    );
+    if (!isParticipant) {
+      return res.status(403).json({ message: "Access denied to this conversation" });
+    }
+
+    const result = await Message.updateMany(
+      { conversation: id, readBy: { $ne: req.user._id } },
+      { $addToSet: { readBy: req.user._id } }
+    );
+    if (result.modifiedCount > 0) {
+      emitToParticipants(conversation, "messages_read", { conversationId: id, readerId: req.user.id });
+    }
+
+    return res.status(200).json({ updated: result.modifiedCount });
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+};
+
+// @desc    Find businesses to start a conversation with
+// @route   GET /api/conversations/contacts?q=
+// @access  Private
+// Only business accounts (vendors, suppliers, MVEC support) are searchable, so
+// buyers' personal details are never exposed through this endpoint.
+exports.searchContacts = async (req, res) => {
+  try {
+    const q = String(req.query.q || "").trim();
+    if (q.length < 2) {
+      return res.status(200).json({ contacts: [] });
+    }
+    const pattern = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+    const contacts = await User.find({
+      _id: { $ne: req.user._id },
+      role: { $in: ["vendor", "supplier", "super_admin"] },
+      $or: [{ Fullname: pattern }, { companyName: pattern }],
+    })
+      .select("Fullname companyName logoUrl role")
+      .limit(10);
+
+    return res.status(200).json({ contacts });
   } catch (error) {
     return res.status(500).json({ message: error.message });
   }

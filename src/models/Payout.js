@@ -1,3 +1,10 @@
+// MySQL (DB_DRIVER=mysql): same API, backed by Sequelize. See src/database/mongoose-compat.
+if (require("../database/driver").isMysql) {
+  const { model } = require("../database/mongoose-compat");
+  module.exports = { VendorBalance: model("VendorBalance"), Payout: model("Payout") };
+  return;
+}
+
 const mongoose = require("mongoose");
 
 // Vendor Balance Summary Ledger

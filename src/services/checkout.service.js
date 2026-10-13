@@ -5,6 +5,7 @@ const { normalizePhone } = require("../utils/sms.util");
 const { effectivePrice } = require("../utils/pricing.util");
 const affiliateAttribution = require("./affiliateAttribution.service");
 const { PROVINCES, DELIVERY_METHODS, computeShippingFee } = require("../config/delivery");
+const shippingService = require("./shipping.service");
 
 const MAX_QTY_PER_LINE = 100;
 const PAYMENT_METHODS = ["MOMO", "AIRTEL"];
@@ -153,6 +154,20 @@ async function createOrder({ userId, lines: rawLines, delivery, paymentMethod, v
     });
   }
 
+  // Delivery fee per seller store from the seller's shipping zones (falling
+  // back to the platform defaults, which equal config/delivery.js).
+  const quote = await shippingService.quoteShipping({
+    lines: orderItems
+      .filter((i) => i.vendor)
+      .map((i) => ({ product: byId.get(String(i.product)), quantity: i.quantity, price: i.price })),
+    address: parsed.shippingAddress,
+    method: parsed.deliveryMethod === "express" ? "EXPRESS" : "STANDARD",
+  });
+  if (!quote.deliverable) {
+    throw httpError(400, quote.groups.filter((g) => !g.deliverable).map((g) => g.message).join(" "));
+  }
+  const shippingFee = quote.groups.length ? quote.shippingFee : parsed.shippingFee;
+
   // Last-click affiliate attribution, resolved from server-side click records
   // (never from client-supplied affiliate data).
   const attributions = await affiliateAttribution.resolveAttributions({
@@ -174,8 +189,13 @@ async function createOrder({ userId, lines: rawLines, delivery, paymentMethod, v
       recipient: parsed.recipient,
       deliveryMethod: parsed.deliveryMethod,
       subtotal,
-      shippingFee: parsed.shippingFee,
-      totalAmount: subtotal + parsed.shippingFee,
+      shippingFee,
+      shippingMethod: quote.method,
+      shippingBreakdown: quote.groups.map((g) => ({
+        vendor: g.vendor, store: g.store, storeName: g.storeName, zone: g.zone, zoneName: g.zoneName,
+        method: g.method, fee: g.fee, eta: g.eta,
+      })),
+      totalAmount: subtotal + shippingFee,
       paymentMethod: PAYMENT_METHODS.includes(paymentMethod) ? paymentMethod : "MOMO",
       paymentStatus: "PENDING",
       orderStatus: "PENDING",

@@ -1,3 +1,9 @@
+// MySQL (DB_DRIVER=mysql): same API, backed by Sequelize. See src/database/mongoose-compat.
+if (require("../database/driver").isMysql) {
+  module.exports = require("../database/mongoose-compat").model("ShippingZone");
+  return;
+}
+
 const mongoose = require("mongoose");
 const crypto = require("crypto");
 
@@ -16,8 +22,10 @@ const shippingZoneSchema = new mongoose.Schema(
     districts: { type: [String], default: [] },
     postalCodes: { type: [String], default: [] },
 
-    fee: { type: Number, default: 0 }, // flat delivery fee in RWF
-    freeOverAmount: { type: Number, default: 0 }, // free delivery above this order total
+    fee: { type: Number, default: 0 }, // standard delivery fee in RWF
+    expressFee: { type: Number, default: null }, // EXPRESS fee; null = same as standard
+    pickupFee: { type: Number, default: 0 }, // PICKUP fee (usually free)
+    freeOverAmount: { type: Number, default: 0 }, // free STANDARD delivery at or above this subtotal (per store)
 
     eta: { type: String, default: "1–3 days" }, // estimated delivery window text
     methods: {

@@ -53,6 +53,7 @@ exports.becomeSeller = async (req, res) => {
     try {
       store = await Store.create({
         vendor: req.user._id,
+        isPrimary: !(await Store.exists({ vendor: req.user._id })),
         storeName: businessName,
         slug: storeSlug,
         description,
@@ -124,7 +125,8 @@ exports.onboardVendor = async (req, res) => {
     // Auto-sync Store record so all store/staff/settings endpoints function seamlessly
     try {
       const Store = require("../models/Store");
-      let store = await Store.findOne({ vendor: req.user.id });
+      const { getPrimaryStore } = require("../utils/vendorStore.util");
+      let store = await getPrimaryStore(req.user.id);
       if (!store) {
         const createSlug = (text) =>
           text
@@ -145,6 +147,7 @@ exports.onboardVendor = async (req, res) => {
 
         await Store.create({
           vendor: req.user.id,
+          isPrimary: true,
           storeName: businessName,
           slug: slugCandidate,
           description: description || "",
@@ -220,8 +223,8 @@ exports.updateMyProfile = async (req, res) => {
 
     // Sync Store record
     try {
-      const Store = require("../models/Store");
-      const store = await Store.findOne({ vendor: req.user.id });
+      const { getPrimaryStore } = require("../utils/vendorStore.util");
+      const store = await getPrimaryStore(req.user.id);
       if (store) {
         if (businessName !== undefined) store.storeName = businessName;
         if (description !== undefined) store.description = description;

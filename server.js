@@ -1,6 +1,8 @@
 const express = require("express");
 const http = require("http");
 const mongoose = require("mongoose");
+// Expose `id` alongside `_id` in every JSON response; the frontend reads `id`.
+mongoose.set("toJSON", { virtuals: true });
 const dotenv = require("dotenv");
 const helmet = require("helmet");
 const morgan = require("morgan");
@@ -25,9 +27,22 @@ dotenv.config();
 // Ensure directConnection or explicit replicaSet options are provided
 const MONGO_URI = process.env.MONGO_URI || "mongodb://127.0.0.1:27017/your_database_name?replicaSet=rs0&directConnection=true";
 
-mongoose.connect(MONGO_URI)
-  .then(() => console.log("Connected to MongoDB Replica Set successfully"))
-  .catch((err) => console.error("Error connecting to MongoDB:", err));
+// DB_DRIVER=mysql runs the same app on MySQL (src/database); MongoDB is the default.
+const { isMysql } = require("./src/database/driver");
+
+if (isMysql) {
+  const { sequelize } = require("./src/database");
+  sequelize.authenticate()
+    .then(() => {
+      console.log(`Connected to MySQL database "${sequelize.config.database}" successfully`);
+      initBackgroundWorkers();
+    })
+    .catch((err) => console.error("Error connecting to MySQL:", err.message));
+} else {
+  mongoose.connect(MONGO_URI)
+    .then(() => console.log("Connected to MongoDB Replica Set successfully"))
+    .catch((err) => console.error("Error connecting to MongoDB:", err));
+}
 
 const app = express();
 
@@ -184,7 +199,7 @@ app.use((err, req, res, next) => {
 });
 
 // Initialize background cron tasks once DB connection is established
-mongoose.connection.once("open", () => {
+if (!isMysql) mongoose.connection.once("open", () => {
   console.log("Connected to MongoDB.");
   rebuildSparseUserIndexes();
   initBackgroundWorkers();

@@ -1,9 +1,9 @@
+const mongoose = require("mongoose");
 const Subscription = require("../models/Subscription");
 const BuyerSubscription = require("../models/BuyerSubscription");
 const Advertisement = require("../models/Advertisement");
 const Vendor = require("../models/Vendor");
 const Product = require("../models/Product");
-const mongoose = require("mongoose");
 
 // ─── DISPLAY / DICTIONARY HELPERS ────────────────────────────────────────────
 // All mapping constants keep the backend "friendly" values in sync with the
@@ -463,11 +463,10 @@ exports.updateMyAdvertisementStatus = async (req, res) => {
       return res.status(400).json({ message: "status must be ACTIVE or PAUSED" });
     }
 
-    if (!mongoose.isValidObjectId(req.params.id)) {
-      return res.status(404).json({ message: "Advertisement campaign not found" });
-    }
+    // The list endpoint exposes publicId as `id`, so accept either identifier.
+    const adId = req.params.id;
     const ad = await Advertisement.findOne({
-      _id: req.params.id,
+      ...(mongoose.isValidObjectId(adId) ? { _id: adId } : { publicId: adId }),
       vendor: vendor._id,
     });
     if (!ad) {

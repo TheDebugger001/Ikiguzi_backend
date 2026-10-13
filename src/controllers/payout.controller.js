@@ -133,6 +133,9 @@ exports.creditPendingEarnings = async (orderId, vendorId) => {
 exports.releaseOrderEarnings = async (orderId, vendorId) => {
   const order = await Order.findById(orderId);
   if (!order) return;
+  // The seller collected this money directly (paid offline, or cash on delivery
+  // for an order they recorded themselves); nothing passed through MVEC.
+  if (order.paidOffline || (order.source === "MANUAL" && order.paymentMethod === "CASH_ON_DELIVERY")) return;
 
   const vendorItems = order.items.filter(
     (item) => item.vendor && item.vendor.toString() === vendorId.toString()
@@ -144,7 +147,11 @@ exports.releaseOrderEarnings = async (orderId, vendorId) => {
   }, 0);
 
   const platformFee = (itemSubtotal * TOTAL_PLATFORM_FEE_PERCENT) / 100;
-  const netEarnings = itemSubtotal - platformFee;
+  // Delivery fees for this seller's parcels are paid out in full (no commission).
+  const shippingFee = (order.shippingBreakdown || [])
+    .filter((s) => s.vendor && s.vendor.toString() === vendorId.toString())
+    .reduce((sum, s) => sum + (s.fee || 0), 0);
+  const netEarnings = itemSubtotal - platformFee + shippingFee;
 
   let balance = await VendorBalance.findOne({ vendor: vendorId });
   if (!balance) {

@@ -31,6 +31,7 @@ router.get("/my-orders", getMyOrders);
 // Keep this before /:id; otherwise "deliverable" is parsed as an order ID.
 router.get("/deliverable", authorize("delivery", "courier", "vendor", "supplier", "super_admin"), getDeliverable);
 router.get("/vendor/orders", authorize("vendor"), getVendorOrders);
+router.post("/vendor/manual", authorize("vendor"), require("../controllers/manualOrder.controller").createManualOrder);
 router.get("/:id", getOrderById);
 router.post("/:id/cancel", protect, cancelOrderByBuyer);
 router.patch(

@@ -24,6 +24,9 @@ router.post("/pay/airtel", protect, limits.payment, initiateAirtelPayment);
 // Check payment status (reconciles with Paypack while pending)
 router.get("/status/:paymentId", protect, checkPaymentStatus);
 
+// Check payment status (reconciles with Paypack while pending)
+router.get("/status/:paymentId", protect, checkPaymentStatus);
+
 // Direct Confirmation (Card, Bank, or dev confirmation)
 router.post("/confirm", protect, confirmPayment);
 

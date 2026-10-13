@@ -263,28 +263,12 @@ exports.handlePaypackWebhook = async (req, res) => {
         .json({ message: "Unable to resolve payment for webhook callback." });
     }
 
-    const status = paypackService.normalizeStatus(data.status);
-
-    if (status !== "SUCCESSFUL") {
-      if (status === "FAILED" && payment.status === "PENDING") {
-        payment.status = "FAILED";
-        payment.gatewayResponse = req.body;
-        await payment.save();
-      }
-      return res.status(200).json({
-        success: true,
-        message: "Transaction status not successful. Recorded.",
-      });
-    }
-
-    const result = await paymentService.processPaymentWebhook({
-      provider: "PAYPACK",
-      externalTransactionId: data.ref,
-      orderId: payment.parentOrder,
-      paymentId: payment._id,
+    const result = await paymentService.settlePaypackPayment({
+      payment,
+      status: paypackService.normalizeStatus(data.status),
       amount: Number(data.amount),
+      fee: Number(data.fee) || 0,
       payload: req.body,
-      gatewayFee: Number(data.fee) || 0,
     });
 
     return res.status(200).json({

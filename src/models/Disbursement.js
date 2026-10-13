@@ -1,3 +1,9 @@
+// MySQL (DB_DRIVER=mysql): same API, backed by Sequelize. See src/database/mongoose-compat.
+if (require("../database/driver").isMysql) {
+  module.exports = require("../database/mongoose-compat").model("Disbursement");
+  return;
+}
+
 const mongoose = require("mongoose");
 
 // Money MVEC sends out to a mobile money number: buyer refunds and affiliate

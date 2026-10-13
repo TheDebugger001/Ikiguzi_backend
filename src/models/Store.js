@@ -1,13 +1,22 @@
+// MySQL (DB_DRIVER=mysql): same API, backed by Sequelize. See src/database/mongoose-compat.
+if (require("../database/driver").isMysql) {
+  module.exports = require("../database/mongoose-compat").model("Store");
+  return;
+}
+
 const mongoose = require("mongoose");
 
 const storeSchema = new mongoose.Schema(
   {
+    // A vendor may own several stores; exactly one is flagged isPrimary and is
+    // used wherever a single store is implied (staff, legacy /stores/mine).
     vendor: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
       required: true,
-      unique: true, // One store per vendor user account
+      index: true,
     },
+    isPrimary: { type: Boolean, default: false },
     storeName: {
       type: String,
       required: true,
@@ -67,5 +76,7 @@ const storeSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+storeSchema.index({ vendor: 1, isPrimary: -1, createdAt: 1 });
 
 module.exports = mongoose.model("Store", storeSchema);

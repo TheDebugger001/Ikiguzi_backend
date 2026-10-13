@@ -1,6 +1,6 @@
 const mongoose = require("mongoose");
 const Promotion = require("../models/Promotion");
-const Store = require("../models/Store");
+const { resolveOwnedStore } = require("../utils/vendorStore.util");
 
 function mapPromotion(p) {
   return {
@@ -30,6 +30,10 @@ function mapPromotion(p) {
     updatedAt: p.updatedAt,
   };
 }
+
+// The list endpoint exposes publicId as `id`, so accept either identifier.
+const findPromotion = (id) =>
+  mongoose.isValidObjectId(id) ? Promotion.findById(id) : Promotion.findOne({ publicId: id });
 
 const allowedStatus = ["DRAFT", "SCHEDULED", "ACTIVE", "PAUSED", "EXPIRED", "CANCELLED"];
 const allowedType = ["PERCENT", "FIXED", "FREE_SHIPPING"];
@@ -76,7 +80,10 @@ exports.createPromotion = async (req, res) => {
     const isVendor = req.user.role === "vendor";
     let store = null;
     if (isVendor) {
-      store = await Store.findOne({ vendor: req.user._id });
+      store = await resolveOwnedStore(req.user._id, req.body.storeId);
+      if (!store && req.body.storeId) {
+        return res.status(400).json({ message: "Select one of your own stores." });
+      }
       if (!store && !product) {
         return res.status(400).json({ message: "Create a store before adding promotions" });
       }
@@ -138,7 +145,7 @@ exports.listPromotions = async (req, res) => {
 exports.updatePromotion = async (req, res) => {
   try {
     const { id } = req.params;
-    const promotion = await Promotion.findById(id);
+    const promotion = await findPromotion(id);
     if (!promotion) {
       return res.status(404).json({ message: "Promotion not found" });
     }
@@ -156,7 +163,7 @@ exports.updatePromotion = async (req, res) => {
     if (code !== undefined && code.trim()) {
       const nextCode = String(code).trim().toUpperCase();
       if (nextCode !== promotion.code) {
-        const exists = await Promotion.findOne({ code: nextCode, _id: { $ne: id } });
+        const exists = await Promotion.findOne({ code: nextCode, _id: { $ne: promotion._id } });
         if (exists) {
           return res.status(409).json({ message: "A promotion with this code already exists" });
         }
@@ -198,7 +205,7 @@ exports.updatePromotion = async (req, res) => {
 exports.deletePromotion = async (req, res) => {
   try {
     const { id } = req.params;
-    const promotion = await Promotion.findById(id);
+    const promotion = await findPromotion(id);
     if (!promotion) {
       return res.status(404).json({ message: "Promotion not found" });
     }
@@ -209,7 +216,7 @@ exports.deletePromotion = async (req, res) => {
       return res.status(403).json({ message: "Not authorized to delete this promotion" });
     }
 
-    await Promotion.deleteOne({ _id: id });
+    await Promotion.deleteOne({ _id: promotion._id });
     return res.status(200).json({ message: "Promotion deleted" });
   } catch (error) {
     console.error("Error deleting promotion:", error);

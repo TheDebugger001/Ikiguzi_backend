@@ -1,3 +1,9 @@
+// MySQL (DB_DRIVER=mysql): same API, backed by Sequelize. See src/database/mongoose-compat.
+if (require("../database/driver").isMysql) {
+  module.exports = require("../database/mongoose-compat").model("AffiliateClick");
+  return;
+}
+
 const mongoose = require("mongoose");
 
 // One row per tracked referral click. AffiliateLink only keeps a lifetime

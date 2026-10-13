@@ -1,11 +1,23 @@
+// MySQL (DB_DRIVER=mysql): same API, backed by Sequelize. See src/database/mongoose-compat.
+if (require("../database/driver").isMysql) {
+  module.exports = require("../database/mongoose-compat").model("Payment");
+  return;
+}
+
 const mongoose = require("mongoose");
 
 const paymentSchema = new mongoose.Schema(
   {
+    // Set for order payments; standalone payments (amount + phone) have none.
     parentOrder: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Order",
-      required: true,
+      index: true,
+    },
+    // User who initiated the payment.
+    user: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
       index: true,
     },
     transactionReference: {
