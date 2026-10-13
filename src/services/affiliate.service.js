@@ -19,6 +19,8 @@ const MINIMUM_PAYOUT_RWF = 10000;
 const CURRENCY = "RWF";
 const { PROMOTABLE_STATUSES } = attribution;
 const CLICK_DEBOUNCE_MS = 10 * 1000;
+// Payout states where the money has left availableBalance but is not withdrawn yet.
+const IN_FLIGHT_PAYOUT = ["PENDING", "APPROVED", "PROCESSING"];
 const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 const WEB_ORIGIN = () => process.env.WEB_ORIGIN || "https://mvec.rw";
 
@@ -106,7 +108,12 @@ class AffiliateService {
       visitorId: vid,
       createdAt: { $gt: new Date(now.getTime() - CLICK_DEBOUNCE_MS) },
     });
-    if (recent) return base;
+    if (recent) {
+      // Not counted again, but the visitor may have clicked another affiliate's
+      // link in between: the latest link must still win the attribution.
+      await attribution.recordClickAttribution({ visitorId: vid, link, now });
+      return base;
+    }
 
     await AffiliateClick.create({
       affiliateUser: link.affiliateUser,
@@ -167,14 +174,14 @@ class AffiliateService {
     session.startTransaction();
 
     try {
-      const wallet = await AffiliateWallet.findOne({ affiliateUser: userId }).session(session);
-      if (!wallet || wallet.availableBalance < amount) {
-        throw new Error("Insufficient available balance for withdrawal.");
-      }
-
-      // Lock available balance into pending payout status
-      wallet.availableBalance -= amount;
-      await wallet.save({ session });
+      // Lock available balance into pending payout status. One guarded atomic
+      // decrement: two concurrent requests can never both spend the same funds.
+      const debited = await AffiliateWallet.findOneAndUpdate(
+        { affiliateUser: userId, availableBalance: { $gte: amount } },
+        { $inc: { availableBalance: -amount } },
+        { returnDocument: "after", session }
+      );
+      if (!debited) throw new Error("Insufficient available balance for withdrawal.");
 
       const payoutNumber = `PAY-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`;
       const payout = await AffiliatePayout.create(
@@ -237,8 +244,6 @@ class AffiliateService {
         throw new Error(`Cannot update payout in state: ${payout.status}`);
       }
 
-      const wallet = await AffiliateWallet.findOne({ affiliateUser: payout.affiliateUser }).session(session);
-
       const isMobile = payout.paymentMethod !== "BANK_TRANSFER";
       if ((status === "APPROVED" || status === "COMPLETED") && isMobile) {
         // Approving a mobile money withdrawal sends it through Paypack.
@@ -260,16 +265,23 @@ class AffiliateService {
         payout.status = "COMPLETED";
         payout.transactionReference = transactionReference;
         payout.approvedBy = adminId;
-        wallet.totalWithdrawn += payout.amount;
+        await AffiliateWallet.updateOne(
+          { affiliateUser: payout.affiliateUser },
+          { $inc: { totalWithdrawn: payout.amount } },
+          { session }
+        );
       } else if (status === "REJECTED") {
         payout.status = "REJECTED";
         payout.rejectionReason = rejectionReason || "Admin rejected payout request";
         // Revert funds back to available balance
-        wallet.availableBalance += payout.amount;
+        await AffiliateWallet.updateOne(
+          { affiliateUser: payout.affiliateUser },
+          { $inc: { availableBalance: payout.amount } },
+          { session }
+        );
       }
 
       await payout.save({ session });
-      await wallet.save({ session });
 
       await session.commitTransaction();
       session.endSession();
@@ -320,7 +332,8 @@ class AffiliateService {
         available,
         pending,
         totalWithdrawn,
-        totalEarned: available + pending + totalWithdrawn,
+        pendingPayout: wallet.pendingPayout || 0,
+        totalEarned: wallet.totalEarned,
       },
       links: links.map((l) => ({
         id: l._id,
@@ -355,10 +368,16 @@ class AffiliateService {
     const users = await User.find({ role: "affiliate" })
       .select("Fullname email status companyName createdAt")
       .sort({ createdAt: -1 });
-    const [links, wallets] = await Promise.all([
+    const [links, wallets, inFlight] = await Promise.all([
       AffiliateLink.find({}).select("affiliateUser clickCount conversionCount"),
       AffiliateWallet.find({}),
+      AffiliatePayout.find({ status: { $in: IN_FLIGHT_PAYOUT } }).select("affiliateUser amount"),
     ]);
+    const inFlightByUser = {};
+    inFlight.forEach((p) => {
+      const id = String(p.affiliateUser);
+      inFlightByUser[id] = (inFlightByUser[id] || 0) + (p.amount || 0);
+    });
 
     const byUser = {};
     links.forEach((l) => {
@@ -374,7 +393,9 @@ class AffiliateService {
 
     return users.map((u) => {
       const w = walletByUser[String(u._id)];
-      const earned = w ? (w.availableBalance || 0) + (w.pendingBalance || 0) + (w.totalWithdrawn || 0) : 0;
+      const earned =
+        (w ? (w.availableBalance || 0) + (w.pendingBalance || 0) + (w.totalWithdrawn || 0) : 0) +
+        (inFlightByUser[String(u._id)] || 0);
       const agg = byUser[String(u._id)] || { clicks: 0, conversions: 0 };
       return {
         id: u._id,
@@ -503,18 +524,22 @@ class AffiliateService {
   }
 
   async getWalletSummary(userId) {
-    const [wallet, lastPayout] = await Promise.all([
+    const [wallet, lastPayout, inFlight] = await Promise.all([
       AffiliateWallet.findOne({ affiliateUser: userId }),
       AffiliatePayout.findOne({ affiliateUser: userId, status: "COMPLETED" }).sort({ updatedAt: -1 }),
+      AffiliatePayout.find({ affiliateUser: userId, status: { $in: IN_FLIGHT_PAYOUT } }).select("amount"),
     ]);
     const available = wallet ? wallet.availableBalance || 0 : 0;
     const pending = wallet ? wallet.pendingBalance || 0 : 0;
     const withdrawn = wallet ? wallet.totalWithdrawn || 0 : 0;
+    // Requested but not yet paid out: left availableBalance, not yet withdrawn.
+    const pendingPayout = round2(inFlight.reduce((sum, p) => sum + (p.amount || 0), 0));
     return {
       availableBalance: available,
       pendingBalance: pending,
+      pendingPayout,
       totalWithdrawn: withdrawn,
-      totalEarned: available + pending + withdrawn,
+      totalEarned: round2(available + pending + pendingPayout + withdrawn),
       currency: CURRENCY,
       minimumPayout: MINIMUM_PAYOUT_RWF,
       lastPayoutAt: lastPayout ? lastPayout.updatedAt : null,
@@ -730,7 +755,7 @@ class AffiliateService {
       clickMatch.createdAt = { $gte: since };
       convMatch.convertedAt = { $gte: since };
     }
-    const [clickRows, convRows] = await Promise.all([
+    const [clickRows, convDocs] = await Promise.all([
       AffiliateClick.aggregate([
         { $match: clickMatch },
         {
@@ -742,33 +767,25 @@ class AffiliateService {
           },
         },
       ]),
-      ConversionAudit.aggregate([
-        { $match: convMatch },
-        {
-          $group: {
-            _id: "$link",
-            conversions: { $sum: 1 },
-            commission: { $sum: { $subtract: ["$commissionEarned", "$reversedAmount"] } },
-            revenue: { $sum: { $cond: [{ $eq: ["$status", "REVERSED"] }, 0, "$conversionValue"] } },
-            // Delivered (approved) and not fully refunded.
-            successful: {
-              $sum: {
-                $cond: [
-                  {
-                    $and: [
-                      { $in: ["$status", ["APPROVED", "PAID"]] },
-                      { $gt: [{ $subtract: ["$commissionEarned", "$reversedAmount"] }, 0] },
-                    ],
-                  },
-                  1,
-                  0,
-                ],
-              },
-            },
-          },
-        },
-      ]),
+      // Summed in JS: the arithmetic ($subtract/$cond) is not portable to the
+      // MySQL compatibility layer's aggregation evaluator.
+      ConversionAudit.find(convMatch)
+        .select("link status commissionEarned reversedAmount conversionValue")
+        .lean(),
     ]);
+    const byLink = new Map();
+    for (const c of convDocs) {
+      const key = String(c.link);
+      const row = byLink.get(key) || { _id: c.link, conversions: 0, commission: 0, revenue: 0, successful: 0 };
+      const net = this._net(c);
+      row.conversions += 1;
+      row.commission += net;
+      row.revenue += c.status === "REVERSED" ? 0 : c.conversionValue || 0;
+      // Delivered (approved) and not fully refunded.
+      if (["APPROVED", "PAID"].includes(c.status) && net > 0) row.successful += 1;
+      byLink.set(key, row);
+    }
+    const convRows = [...byLink.values()];
     const map = new Map();
     clickRows.forEach((r) =>
       map.set(String(r._id), {
@@ -914,17 +931,9 @@ class AffiliateService {
         { $match: { affiliateUser: uid, createdAt: { $gte: since } } },
         { $group: { _id: day("$createdAt"), count: { $sum: 1 } } },
       ]),
-      ConversionAudit.aggregate([
-        { $match: { affiliateUser: uid, status: { $ne: "REJECTED" }, convertedAt: { $gte: since } } },
-        {
-          $group: {
-            _id: day("$convertedAt"),
-            conversions: { $sum: 1 },
-            revenue: { $sum: { $cond: [{ $eq: ["$status", "REVERSED"] }, 0, "$conversionValue"] } },
-            commission: { $sum: { $subtract: ["$commissionEarned", "$reversedAmount"] } },
-          },
-        },
-      ]),
+      ConversionAudit.find({ affiliateUser: uid, status: { $ne: "REJECTED" }, convertedAt: { $gte: since } })
+        .select("convertedAt status conversionValue commissionEarned reversedAmount")
+        .lean(),
       AffiliateClick.aggregate([
         { $match: { affiliateUser: uid, createdAt: { $gte: since } } },
         { $group: { _id: "$visitorId" } },
@@ -945,12 +954,13 @@ class AffiliateService {
       if (i !== undefined) clicksSeries[i] += r.count;
     });
     convRows.forEach((r) => {
-      const i = index.get(r._id);
+      const i = index.get(this._dayKey(r.convertedAt));
       if (i !== undefined) {
-        convSeries[i] += r.conversions;
-        commissionSeries[i] += round2(r.commission);
-        revenue += r.revenue || 0;
-        commission += r.commission || 0;
+        const net = this._net(r);
+        convSeries[i] += 1;
+        commissionSeries[i] = round2(commissionSeries[i] + net);
+        revenue += r.status === "REVERSED" ? 0 : r.conversionValue || 0;
+        commission += net;
       }
     });
 
@@ -992,12 +1002,10 @@ class AffiliateService {
       AffiliateClick.distinct("link", { affiliateUser: uid, link: { $ne: null } }),
       // Successful = clicked, ordered AND delivered (commission approved and
       // not fully refunded). Terminated links keep counting: history is kept.
-      ConversionAudit.distinct("link", {
-        affiliateUser: uid,
-        link: { $ne: null },
-        status: { $in: ["APPROVED", "PAID"] },
-        $expr: { $gt: [{ $subtract: ["$commissionEarned", "$reversedAmount"] }, 0] },
-      }),
+      ConversionAudit.find({ affiliateUser: uid, link: { $ne: null }, status: { $in: ["APPROVED", "PAID"] } })
+        .select("link commissionEarned reversedAmount")
+        .lean()
+        .then((rows) => [...new Set(rows.filter((r) => this._net(r) > 0).map((r) => String(r.link)))]),
     ]);
 
     const click = clickTotals[0] || { clicks: 0, visitors: [] };

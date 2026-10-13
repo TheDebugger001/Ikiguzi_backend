@@ -549,7 +549,12 @@ async function cancelOrder({ orderId, actor, reason }) {
           throw checkoutService.httpError(400, "The 30-minute cancellation period has ended. Use Report a problem instead.");
         }
       }
-      await financialService.refundHeldEscrowForOrder({ orderId: order._id, session });
+      await financialService.refundHeldEscrowForOrder({
+        orderId: order._id,
+        session,
+        reversalKey: `order-cancel:${order._id}`,
+        reversalReason: "Order cancelled and refunded",
+      });
       paidWith = await Payment.findOne({ parentOrder: order._id, status: "SUCCESS" }).sort({ paidAt: -1, createdAt: -1 }).session(session);
       await Payment.updateMany({ parentOrder: order._id, status: "SUCCESS" }, { status: "REFUNDED" }, { session });
       order.paymentStatus = "REFUNDED";

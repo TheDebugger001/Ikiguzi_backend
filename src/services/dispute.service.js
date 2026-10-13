@@ -114,7 +114,12 @@ class DisputeService {
       if (decision === "REFUND_BUYER") {
         status = "RESOLVED_BUYER_REFUNDED";
         // Undo the held escrow exactly as a buyer cancellation does.
-        await financialService.refundHeldEscrowForOrder({ orderId: order._id, session });
+        await financialService.refundHeldEscrowForOrder({
+          orderId: order._id,
+          session,
+          reversalKey: `dispute:${dispute._id}`,
+          reversalReason: `Dispute ${dispute.disputeNumber || dispute._id} REFUND_BUYER`,
+        });
         refundPayment = await Payment.findOne({ parentOrder: order._id, status: "SUCCESS" }).sort({ createdAt: -1 }).session(session);
         await Payment.updateMany({ parentOrder: order._id, status: "SUCCESS" }, { status: "REFUNDED" }, { session });
         order.paymentStatus = "REFUNDED";

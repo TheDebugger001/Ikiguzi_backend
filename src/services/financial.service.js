@@ -9,6 +9,7 @@ const AffiliateWallet = require("../models/AffiliateWallet");
 const User = require("../models/User");
 const Order = require("../models/Order");
 const ConversionAudit = require("../models/ConversionAudit");
+const affiliateAttribution = require("./affiliateAttribution.service");
 
 async function getOrCreateLedgerAccount({ accountType, ownerId = null, session }) {
   const query = { accountType };
@@ -314,8 +315,20 @@ exports.releaseEscrowToVendor = async ({ settlementId, session, adminUserId = nu
  * order. Undoes exactly what lockPaymentInEscrow recorded: the escrow balance,
  * the pending wallet balances and the settlement itself, and writes a
  * BUYER_REFUND ledger entry per vendor. Released settlements are never touched.
+ *
+ * Affiliate commission is owned by reverseOrderCommission (one place debits the
+ * affiliate wallet, picking pending vs available from the commission's status).
+ * It runs here, in the same transaction, when a reversalKey is supplied.
  */
-exports.refundHeldEscrowForOrder = async ({ orderId, session }) => {
+exports.refundHeldEscrowForOrder = async ({ orderId, session, reversalKey = null, reversalReason = "" }) => {
+  if (reversalKey) {
+    await affiliateAttribution.reverseOrderCommission({
+      orderId,
+      key: reversalKey,
+      reason: reversalReason || "Order refunded",
+      session,
+    });
+  }
   const settlements = await Settlement.find({ order: orderId, status: "HELD" }).session(session);
   if (!settlements.length) return [];
 
@@ -363,13 +376,6 @@ exports.refundHeldEscrowForOrder = async ({ orderId, session }) => {
       await AdminWallet.updateOne(
         { adminUser: adminUserId },
         { $inc: { pendingBalance: -settlement.adminShare } },
-        { session }
-      );
-    }
-    if (settlement.affiliateShare > 0 && settlement.affiliateUser) {
-      await AffiliateWallet.updateOne(
-        { affiliateUser: settlement.affiliateUser },
-        { $inc: { pendingBalance: -settlement.affiliateShare } },
         { session }
       );
     }

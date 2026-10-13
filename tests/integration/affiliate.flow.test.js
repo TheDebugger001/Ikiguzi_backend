@@ -425,4 +425,97 @@ describe("affiliate flow", () => {
     links = (await request(app).get("/api/affiliates/links").set("Authorization", `Bearer ${token(affA)}`)).body.data;
     assert.equal(links[0].successfulCount, 1);
   });
+
+  // ── Hardening: wallet/ledger consistency, last-click debounce, payouts ─────
+  const cancelAs = (user, order) =>
+    request(app).post(`/api/orders/${order._id}/cancel`).set("Authorization", `Bearer ${token(user)}`).send({});
+
+  test("cancelling one paid order does not touch another order's pending commission", async () => {
+    const { order: o1 } = await promotedOrder();
+    const { order: o2 } = await promotedOrder();
+    await pay(o1);
+    await pay(o2);
+    assert.equal((await wallet()).pendingBalance, 1000);
+    assert.equal((await cancelAs(buyer, o1)).status, 200);
+    const w = await wallet();
+    assert.equal(w.pendingBalance, 500, "only o1's 500 leaves pending (once)");
+    assert.equal(w.availableBalance, 0);
+    assert.equal(await ConversionAudit.countDocuments({ order: o2._id, status: "PENDING" }), 1);
+  });
+
+  test("cancelling after a partial vendor delivery reverses from pending, never from available", async () => {
+    const vendor2 = await mkUser("vendor");
+    const shirt = await Product.create({
+      vendor: vendor2._id, category: cat._id, description: "d", stockQuantity: 5, media: { mainImage: "x.jpg" },
+      name: "Shirt", slug: "shirt", sku: "S1", price: 20000, status: "ACTIVE",
+    });
+    // Affiliate already has 500 available from a different, delivered order.
+    const { order: done } = await promotedOrder();
+    await pay(done);
+    assert.equal((await deliver(done, admin)).status, 200);
+    assert.equal((await wallet()).availableBalance, 500);
+
+    const { body } = await createLink(affA, mouse._id);
+    const c = await click(body.link.affiliateCode);
+    const res = await checkout([{ productId: mouse._id, qty: 1 }, { productId: shirt._id, qty: 1 }], c.body.data.visitorId);
+    assert.equal(res.status, 201, JSON.stringify(res.body));
+    const order = await Order.findById(res.body.order._id);
+    await pay(order);
+    assert.equal((await deliver(order, vendor)).status, 200); // only vendor 1 delivered
+    const mid = await ConversionAudit.findOne({ order: order._id });
+    assert.equal(mid.status, "PENDING", "order not fully delivered yet");
+
+    assert.equal((await cancelAs(admin, order)).status, 200);
+    const a = await ConversionAudit.findOne({ order: order._id });
+    assert.equal(a.status, "REVERSED");
+    assert.equal(a.unrecoveredAmount, 0);
+    const w = await wallet();
+    assert.equal(w.pendingBalance, 0);
+    assert.equal(w.availableBalance, 500, "the other order's available commission is untouched");
+  });
+
+  test("approval and later refund keep the AFFILIATE_COMMISSION ledger account in step", async () => {
+    const LedgerAccount = require("../../src/models/LedgerAccount");
+    await LedgerAccount.deleteMany({});
+    const { order } = await promotedOrder();
+    await pay(order);
+    await deliver(order, admin);
+    const bal = async () => (await LedgerAccount.findOne({ accountType: "AFFILIATE_COMMISSION" }))?.balance || 0;
+    assert.equal(await bal(), 500);
+    await attribution.reverseOrderCommission({ orderId: order._id, refundAmount: 75000, key: "refund:half" });
+    assert.equal(await bal(), 250);
+    assert.equal((await wallet()).availableBalance, 250);
+    await attribution.reverseOrderCommission({ orderId: order._id, key: "refund:rest" });
+    assert.equal(await bal(), 0);
+    assert.equal((await wallet()).availableBalance, 0);
+    assert.equal((await audit()).status, "REVERSED");
+  });
+
+  test("last click wins even when the visitor returns to a link within the debounce window", async () => {
+    const la = (await createLink(affA, mouse._id)).body.link;
+    const lb = (await createLink(affB, mouse._id)).body.link;
+    const vid = (await click(la.affiliateCode)).body.data.visitorId;
+    await click(lb.affiliateCode, `?visitorId=${vid}`);
+    await click(la.affiliateCode, `?visitorId=${vid}`); // A again, inside A's debounce window
+    const row = await AffiliateAttribution.findOne({ visitorId: vid, product: mouse._id });
+    assert.equal(String(row.affiliateUser), String(affA._id));
+  });
+
+  test("payout: concurrent withdrawals cannot overdraw; in-flight payouts stay in total earned", async () => {
+    await AffiliateWallet.create({ affiliateUser: affA._id, availableBalance: 20000 });
+    const ask = () =>
+      affiliateService.requestPayout({
+        userId: affA._id,
+        amount: 15000,
+        paymentMethod: "BANK_TRANSFER",
+        accountDetails: { accountName: "A", bankName: "BK", accountNumber: "123" },
+      });
+    const results = await Promise.allSettled([ask(), ask()]);
+    assert.equal(results.filter((r) => r.status === "fulfilled").length, 1);
+    const w = await wallet();
+    assert.equal(w.availableBalance, 5000);
+    const summary = await affiliateService.getWalletSummary(affA._id);
+    assert.equal(summary.totalEarned, 20000, "15000 in a pending payout is still earned");
+    assert.equal(summary.pendingPayout, 15000);
+  });
 });
